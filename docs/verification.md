@@ -40,9 +40,9 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 命令 | 结果 |
 | --- | --- |
 | `npm run typecheck` | 通过 |
-| `npm run test` | 通过：15/15（阶段 3.1 后） |
+| `npm run test` | 通过：22/22（动态轨道与布局后） |
 | `npm run build` | 通过：Vite 生产构建完成 |
-| `npm run test:e2e:local-libs` | 远程结果：1 skipped（Chromium 可启动，但缺完整 WebCodecs），见阶段 B / 3.2 |
+| `npm run test:e2e:local-libs` | 通过：1 个工作台交互 E2E；另有 1 个真实媒体 E2E 因 WebCodecs 环境限制 skipped。 |
 
 ## 已知限制
 
@@ -89,6 +89,22 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | `typecheck` / 单测 / 构建 | 通过 | `npm run typecheck`；`npm run test`：15/15；`npm run build`。 |
 
 未验证：远程环境尚未生成或复播含两个视频片段的 MP4，因此不能声称实际多视频拼接已验收。下一步先在本地 Chrome/Edge 执行 README 的拼接清单；确认后才进入阶段 3.3 的视频片段移动、左右裁剪和删除 UI。
+
+## 阶段 4：可调工作台与动态非视频轨道
+
+分支：`phase4-workspace-tracks`，基线：`25a3875`。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 三栏与时间轴尺寸 | 通过 | CSS Grid + Pointer Events 实现左右栏与底部时间轴调整；最小尺寸为 200px、230px、440px、180px。双击分隔条复位，`ResizeObserver` 在窗口变化时校正保存的会话尺寸。 |
+| 运行时资源稳定性 | 已实现 | 面板尺寸、轨道高度、排序和空轨增删不进入媒体签名，因而不会触发 `AVCanvas` 或 Sprite 同步重建；预览仍固定使用 1280×720 内部画布。 |
+| 动态轨道 | 通过 | `Track` 新增 `heightPx`；可新增、重命名、上下排序及调整字幕/音乐/音效轨。仅空非视频轨可删除，视频轨和非空轨均有保护提示。 |
+| 跨轨片段移动 | 通过（状态逻辑） | 字幕只能移至字幕轨，背景音乐只能移至背景音乐轨，音效同理；一次命令更新 `trackId` 并保留所有媒体时间/素材属性。 |
+| 时间轴滚动 | 通过 | 固定标尺、单一可纵向滚动轨道视口、左侧 sticky 标签列与右侧片段区共享 `scrollTop`；标尺与片段区同步 `scrollLeft`，播放头以统一时间坐标覆盖可见轨道区。 |
+| WebAV 多轨遍历 | 已验证（代码） | `WebAVAdapter` 按全部 `clip.type` 遍历视频、音频和字幕，不依赖 `music`、`sfx`、`caption` 的固定 ID；新轨中的有效片段会进入预览与导出。 |
+| 回归 | 通过 | `typecheck`、Vitest 22/22、生产构建通过。Playwright 工作台 E2E 通过，真实媒体 E2E 仍 skipped。 |
+
+未验证：本地 Chrome/Edge 尚需实际试听两条背景音乐、音效及多字幕轨混合后的预览/导出。远程 Chromium 不具备完整 WebCodecs，不能替代这一媒体验收。下一阶段才实现视频片段移动、左右裁剪和删除 UI；不新增第二视频轨或画中画。
 
 ## 第二阶段：本地 Chrome 验收清单
 

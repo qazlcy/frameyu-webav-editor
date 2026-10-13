@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addAsset, addAudioClip, addCaption, appendVideoClip, getProjectDuration, moveProjectClip, removeClip, trimProjectClip } from '../src/editor/commands';
-import { emptyProject, type Asset } from '../src/editor/types';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, deleteEmptyTrack, getProjectDuration, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, trimProjectClip } from '../src/editor/commands';
+import { MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, emptyProject, type Asset } from '../src/editor/types';
 
 const video = (id: string, durationMs: number): Asset => ({ id, name: `${id}.mp4`, type: 'video', mimeType: 'video/mp4', durationMs, width: 1280, height: 720 });
 const audio: Asset = { id: 'music', name: 'music.mp3', type: 'audio', mimeType: 'audio/mpeg', durationMs: 9000 };
@@ -70,5 +70,48 @@ describe('multi-video project commands', () => {
     expect(project.assets).toHaveLength(1);
     expect(project.clips).toHaveLength(1);
     expect(project.clips[0].assetId).toBe('a');
+  });
+
+  it('adds, names, resizes and reorders non-video tracks with continuous order values', () => {
+    let project = emptyProject();
+    project = addTrack(project, 'music');
+    const added = project.tracks.at(-1)!;
+    project = renameTrack(project, added.id, '氛围音乐');
+    project = resizeTrack(project, added.id, 999);
+    project = reorderTrack(project, added.id, 0);
+    expect(project.tracks.map((track) => track.order)).toEqual([0, 1, 2, 3, 4]);
+    expect(project.tracks[0]).toMatchObject({ id: added.id, name: '氛围音乐', heightPx: MAX_TRACK_HEIGHT_PX });
+    expect(resizeTrack(project, added.id, 1).tracks[0].heightPx).toBe(MIN_TRACK_HEIGHT_PX);
+  });
+
+  it('only removes empty non-video tracks and keeps non-empty tracks protected', () => {
+    let project = addTrack(emptyProject(), 'caption');
+    const captionTrack = project.tracks.at(-1)!;
+    expect(deleteEmptyTrack(project, captionTrack.id).tracks).toHaveLength(4);
+    project = addAsset(project, video('a', 4000));
+    project = appendVideoClip(project, project.assets[0]);
+    project = addCaption(project, captionTrack.id);
+    expect(deleteEmptyTrack(project, captionTrack.id)).toBe(project);
+    expect(deleteEmptyTrack(project, 'video')).toBe(project);
+  });
+
+  it('moves clips only to a compatible track without changing media timing or identity', () => {
+    let project = addAsset(emptyProject(), video('a', 4000));
+    project = addAsset(project, audio);
+    project = appendVideoClip(project, project.assets[0]);
+    project = addTrack(project, 'music');
+    const secondMusic = project.tracks.find((track) => track.type === 'music' && track.id !== 'music')!;
+    project = addAudioClip(project, audio, 'music');
+    const musicClip = project.clips.find((clip) => clip.trackId === 'music')!;
+    const moved = moveClipToCompatibleTrack(project, musicClip.id, musicClip.startMs, secondMusic.id);
+    expect(moved.clips.find((clip) => clip.id === musicClip.id)).toMatchObject({
+      id: musicClip.id,
+      trackId: secondMusic.id,
+      assetId: musicClip.assetId,
+      startMs: musicClip.startMs,
+      sourceStartMs: musicClip.sourceStartMs,
+      durationMs: musicClip.durationMs,
+    });
+    expect(moveClipToCompatibleTrack(moved, musicClip.id, musicClip.startMs, 'sfx')).toBe(moved);
   });
 });

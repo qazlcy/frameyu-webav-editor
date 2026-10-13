@@ -5,3 +5,45 @@
 .preview-panel { display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; padding: 20px; background: #121620; } .preview-frame { width: min(100%, 850px); aspect-ratio: 16/9; background: #080a0e; overflow: hidden; box-shadow: 0 8px 32px #0008; } .webav-preview, .webav-preview canvas { width: 100% !important; height: 100% !important; } .player-controls { display: flex; align-items: center; gap: 12px; width: min(100%, 850px); padding-top: 14px; color: #b7c1d2; font-size: 12px; } .player-controls button { padding: 7px 10px; border: 1px solid #3a4355; color: #e7edf7; background: #242c3c; border-radius: 5px; } .player-controls input { flex: 1; accent-color: #647cf5; }
 .empty { color: #8994a7; font-size: 13px; line-height: 1.6; } .properties { display: grid; gap: 11px; } .properties p { margin: 0; font-size: 13px; line-height: 1.5; color: #bac4d4; } .field { display: grid; gap: 6px; color: #9da9bb; font-size: 12px; } .field input, .field textarea, .field select { width: 100%; padding: 7px; border: 1px solid #354055; border-radius: 5px; background: #111620; color: #e7edf7; } .field textarea { min-height: 65px; resize: vertical; } .danger { padding: 8px; border: 1px solid #883e47; border-radius: 5px; background: #46262d; color: #ffb3ba; }
 .timeline-panel { height: 252px; border-top: 1px solid #292f3d; } .timeline-toolbar { height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid #292f3d; font-size: 13px; } .timeline-toolbar label { color: #aeb9cb; font-size: 12px; } .timeline-toolbar input { vertical-align: middle; accent-color: #647cf5; } .timeline-scroll { height: 211px; overflow: auto; } .timeline-content { position: relative; min-height: 206px; user-select: none; } .ruler { position: relative; height: 27px; border-bottom: 1px solid #303848; color: #8793a8; font-size: 10px; } .ruler span { position: absolute; top: 7px; transform: translateX(-1px); border-left: 1px solid #4a5366; padding-left: 4px; height: 20px; } .track { display: flex; height: 42px; border-bottom: 1px solid #272e3d; } .track-label { width: 110px; flex: 0 0 110px; display: flex; align-items: center; padding-left: 16px; color: #aeb8c9; font-size: 12px; background: #1b202c; border-right: 1px solid #303848; } .track-lane { position: relative; flex: 1; background-image: linear-gradient(90deg, #242c3d 1px, transparent 1px); } .timeline-clip { position: absolute; top: 6px; display: flex; align-items: center; height: 29px; min-width: 18px; padding: 0 7px; overflow: hidden; color: #f3f5fa; border: 1px solid transparent; border-radius: 4px; font-size: 11px; white-space: nowrap; touch-action: none; } .timeline-clip.video { background: #365b9d; } .timeline-clip.audio { background: #3a8778; } .timeline-clip.caption { background: #a66f39; } .timeline-clip.selected { border-color: #fff; box-shadow: 0 0 0 1px #6f89ff; } .timeline-clip span { overflow: hidden; text-overflow: ellipsis; }.trim { position: absolute; top: 0; width: 7px; height: 100%; background: #fff8; cursor: ew-resize; } .trim.left { left: 0; } .trim.right { right: 0; } .playhead { position: absolute; z-index: 3; top: 27px; bottom: 0; width: 10px; transform: translateX(-5px); background: linear-gradient(90deg, transparent 4px, #f45964 4px, #f45964 6px, transparent 6px); cursor: ew-resize; touch-action: none; } .playhead::before { content: ''; position: absolute; left: 1px; top: -1px; width: 8px; height: 8px; border-radius: 50%; background: #f45964; }
+
+/* Workspace and timeline interaction layout.  These overrides deliberately keep AVCanvas at 1280×720 and only change CSS display size. */
+html, body, #root { height: 100%; }
+body { overflow: hidden; }
+.editor-shell { height: 100dvh; min-height: 620px; display: flex; flex-direction: column; overflow: hidden; }
+.editor-body { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.workspace { display: grid; flex: 1 1 auto; height: auto; min-height: 300px; }
+.layout-divider { position: relative; z-index: 8; flex: 0 0 auto; background: #151a24; touch-action: none; outline: none; transition: background .12s ease; }
+.layout-divider:hover, .editor-shell.is-resizing .layout-divider { background: #526fe8; }
+.layout-divider.vertical { width: 6px; cursor: col-resize; }
+.layout-divider.horizontal { height: 6px; cursor: row-resize; border-top: 1px solid #292f3d; border-bottom: 1px solid #292f3d; }
+.layout-divider:focus-visible { box-shadow: inset 0 0 0 2px #94a7ff; }
+.preview-panel { min-height: 0; }
+.timeline-panel { display: flex; flex: 0 0 auto; min-height: 180px; height: auto; flex-direction: column; border-top: 0; overflow: hidden; }
+.timeline-toolbar { flex: 0 0 40px; min-width: 0; gap: 12px; }
+.timeline-actions { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.timeline-actions button { border: 1px solid #3b465d; border-radius: 4px; background: #273247; color: #dbe5f7; padding: 4px 6px; font-size: 11px; }
+.timeline-actions button:hover { background: #344463; }
+.timeline-viewport { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+.timeline-ruler-row { display: flex; flex: 0 0 27px; min-width: 0; border-bottom: 1px solid #303848; }
+.timeline-ruler-label { width: 110px; flex: 0 0 110px; display: flex; align-items: center; padding-left: 16px; color: #8793a8; background: #1b202c; border-right: 1px solid #303848; font-size: 10px; }
+.timeline-ruler-scroll { min-width: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.timeline-ruler-scroll::-webkit-scrollbar { display: none; }
+.timeline-ruler-scroll .ruler { border-bottom: 0; }
+.timeline-body-viewport { position: relative; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.timeline-scroll { position: absolute; inset: 0; height: auto; overflow: auto; overscroll-behavior: contain; }
+.timeline-content { position: relative; min-height: 100%; user-select: none; }
+.track { position: relative; display: flex; min-height: 38px; border-bottom: 1px solid #272e3d; }
+.track.selected-track .track-label { background: #242d40; }
+.track-label { position: sticky; left: 0; z-index: 3; width: 110px; height: 100%; flex: 0 0 110px; display: flex; align-items: center; gap: 3px; padding: 0 4px; color: #aeb8c9; background: #1b202c; border-right: 1px solid #303848; font-size: 12px; }
+.track-label input { width: 0; min-width: 0; flex: 1 1 auto; border: 1px solid transparent; outline: 0; background: transparent; color: #cbd5e7; font-size: 11px; }
+.track-label input:focus { border-color: #627cf3; border-radius: 3px; background: #111620; }
+.track-grip, .track-delete { width: 18px; height: 22px; flex: 0 0 18px; padding: 0; border: 0; border-radius: 3px; color: #92a0b6; background: transparent; }
+.track-grip { cursor: grab; touch-action: none; }
+.track-grip:active { cursor: grabbing; }
+.track-grip:hover, .track-delete:hover:not(:disabled) { color: #fff; background: #364057; }
+.track-delete:disabled { opacity: .38; }
+.track-lane { position: relative; min-width: 0; flex: 1 1 auto; background-image: linear-gradient(90deg, #242c3d 1px, transparent 1px); }
+.timeline-clip { top: 6px; height: calc(100% - 12px); min-height: 24px; }
+.track-height-handle { position: absolute; z-index: 5; right: 0; bottom: -3px; left: 0; height: 6px; cursor: row-resize; touch-action: none; }
+.track-height-handle:hover { background: #657ff2; }
+.playhead { z-index: 6; top: 0; bottom: 0; }

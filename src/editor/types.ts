@@ -1,6 +1,9 @@
 export type AssetType = 'video' | 'audio';
 export type TrackType = 'caption' | 'video' | 'music' | 'sfx';
 export type CaptionPosition = 'bottom' | 'center' | 'top';
+export const DEFAULT_TRACK_HEIGHT_PX = 42;
+export const MIN_TRACK_HEIGHT_PX = 38;
+export const MAX_TRACK_HEIGHT_PX = 180;
 
 export interface Asset {
   id: string;
@@ -18,6 +21,7 @@ export interface Track {
   name: string;
   order: number;
   locked: boolean;
+  heightPx: number;
   clipIds: string[];
 }
 
@@ -59,10 +63,10 @@ export interface EditorState {
 }
 
 export const INITIAL_TRACKS: ReadonlyArray<Track> = [
-  { id: 'caption', type: 'caption', name: '字幕', order: 0, locked: false, clipIds: [] },
-  { id: 'video', type: 'video', name: '视频', order: 1, locked: false, clipIds: [] },
-  { id: 'music', type: 'music', name: '背景音乐', order: 2, locked: false, clipIds: [] },
-  { id: 'sfx', type: 'sfx', name: '音效', order: 3, locked: false, clipIds: [] },
+  { id: 'caption', type: 'caption', name: '字幕', order: 0, locked: false, heightPx: DEFAULT_TRACK_HEIGHT_PX, clipIds: [] },
+  { id: 'video', type: 'video', name: '视频', order: 1, locked: false, heightPx: DEFAULT_TRACK_HEIGHT_PX, clipIds: [] },
+  { id: 'music', type: 'music', name: '背景音乐', order: 2, locked: false, heightPx: DEFAULT_TRACK_HEIGHT_PX, clipIds: [] },
+  { id: 'sfx', type: 'sfx', name: '音效', order: 3, locked: false, heightPx: DEFAULT_TRACK_HEIGHT_PX, clipIds: [] },
 ];
 
 export const emptyProject = (): Project => ({
