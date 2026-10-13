@@ -13,6 +13,11 @@ export interface CapabilityReport {
   reasons: string[];
 }
 
+export interface PreviewCallbacks {
+  onTimeChange: (timeMs: number) => void;
+  onPlaybackChange?: (playing: boolean) => void;
+}
+
 const positionY = (position: CaptionPosition) => ({ top: 70, center: 330, bottom: 610 }[position]);
 
 export class WebAVAdapter {
@@ -20,8 +25,10 @@ export class WebAVAdapter {
   private sprites: VisibleSprite[] = [];
   private assets = new Map<string, RuntimeAsset>();
   private project: Project | null = null;
-  private onTimeChange?: (timeMs: number) => void;
+  private callbacks?: PreviewCallbacks;
   private unsubs: Array<() => void> = [];
+  private latestSyncRequest = 0;
+  private syncQueue: Promise<void> = Promise.resolve();
 
   static async checkCapabilities(): Promise<CapabilityReport> {
     const reasons: string[] = [];
@@ -36,13 +43,19 @@ export class WebAVAdapter {
     return { supported: reasons.length === 0, reasons };
   }
 
-  attach(container: HTMLElement, onTimeChange: (timeMs: number) => void) {
+  attach(container: HTMLElement, callbacks: PreviewCallbacks) {
     if (this.canvas) return;
-    this.onTimeChange = onTimeChange;
+    this.callbacks = callbacks;
     this.canvas = new AVCanvas(container, { width: 1280, height: 720, bgColor: '#0b101a' });
-    this.unsubs.push(this.canvas.on('timeupdate', (timeUs) => this.onTimeChange?.(usToMs(timeUs))));
-    this.unsubs.push(this.canvas.on('paused', () => console.log('[WebAV] preview paused')));
-    this.unsubs.push(this.canvas.on('playing', () => console.log('[WebAV] preview started')));
+    this.unsubs.push(this.canvas.on('timeupdate', (timeUs) => this.callbacks?.onTimeChange(usToMs(timeUs))));
+    this.unsubs.push(this.canvas.on('paused', () => {
+      this.callbacks?.onPlaybackChange?.(false);
+      console.log('[WebAV] preview paused');
+    }));
+    this.unsubs.push(this.canvas.on('playing', () => {
+      this.callbacks?.onPlaybackChange?.(true);
+      console.log('[WebAV] preview started');
+    }));
     console.log('[WebAV] canvas initialized');
   }
 
@@ -66,7 +79,17 @@ export class WebAVAdapter {
     console.log('[WebAV] asset registered', asset.name, asset.durationMs);
   }
 
-  async sync(project: Project, previewMs = 0) {
+  sync(project: Project, previewMs = 0): Promise<void> {
+    const request = ++this.latestSyncRequest;
+    const applyIfCurrent = async () => {
+      if (request !== this.latestSyncRequest) return;
+      await this.applySync(project, previewMs);
+    };
+    this.syncQueue = this.syncQueue.then(applyIfCurrent, applyIfCurrent);
+    return this.syncQueue;
+  }
+
+  private async applySync(project: Project, previewMs: number) {
     if (!this.canvas) throw new Error('预览画布尚未初始化');
     this.project = project;
     this.canvas.pause();
@@ -115,6 +138,7 @@ export class WebAVAdapter {
     this.unsubs.splice(0).forEach((unsubscribe) => unsubscribe());
     this.canvas?.destroy();
     this.canvas = null;
+    this.callbacks = undefined;
     this.assets.clear();
     console.log('[WebAV] adapter destroyed');
   }

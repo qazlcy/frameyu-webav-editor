@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addAudioClip, addCaption, getAsset, getMainDuration, moveProjectClip, removeClip, trimProjectClip, updateClip, upsertAsset } from './editor/commands';
 import { emptyProject, TRACKS, type Asset, type EditorState, type Project, type TimelineClip, type TrackType } from './editor/types';
-import { clamp } from './editor/timelineMath';
+import { clamp, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入主视频' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
 const makeId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
-type DragState = { clip: TimelineClip; mode: 'move' | 'left' | 'right'; startX: number };
+type DragState =
+  | { kind: 'clip'; clip: TimelineClip; mode: 'move' | 'left' | 'right'; pointerStartMs: number }
+  | { kind: 'playhead' };
 
 export default function App() {
   const previewRef = useRef<HTMLDivElement>(null);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<WebAVAdapter>();
   const durationRef = useRef(0);
   const [project, setProject] = useState<Project>(emptyProject);
@@ -30,8 +33,13 @@ export default function App() {
     const adapter = new WebAVAdapter();
     adapterRef.current = adapter;
     if (previewRef.current) {
-      adapter.attach(previewRef.current, (playheadMs) => {
-        setEditor((previous) => ({ ...previous, playheadMs: clamp(playheadMs, 0, durationRef.current) }));
+      adapter.attach(previewRef.current, {
+        onTimeChange: (playheadMs) => {
+          setEditor((previous) => ({ ...previous, playheadMs: clamp(playheadMs, 0, durationRef.current) }));
+        },
+        onPlaybackChange: (playing) => {
+          setEditor((previous) => ({ ...previous, playback: playing ? 'playing' : 'paused' }));
+        },
       });
       setAdapterReady(true);
     }
@@ -129,27 +137,51 @@ export default function App() {
     setProject((previous) => updateClip(previous, selected.id, patch));
   }
 
-  function startDrag(event: React.PointerEvent, clip: TimelineClip, mode: DragState['mode']) {
+  function pointerTime(event: Pick<React.PointerEvent, 'clientX'>) {
+    const viewport = timelineScrollRef.current;
+    if (!viewport) return 0;
+    const { left } = viewport.getBoundingClientRect();
+    return clamp(viewportXToTime(event.clientX, left, viewport.scrollLeft, editor.zoom), 0, mainDuration);
+  }
+
+  function startClipDrag(event: React.PointerEvent, clip: TimelineClip, mode: Extract<DragState, { kind: 'clip' }>['mode']) {
     if (clip.type === 'video') return;
     event.stopPropagation();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     setEditor((previous) => ({ ...previous, selectedClipId: clip.id, playback: 'paused' }));
     adapterRef.current?.pause();
-    setDrag({ clip, mode, startX: event.clientX });
+    setDrag({ kind: 'clip', clip, mode, pointerStartMs: pointerTime(event) });
+  }
+
+  function startPlayheadDrag(event: React.PointerEvent) {
+    event.stopPropagation();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    adapterRef.current?.pause();
+    setEditor((previous) => ({ ...previous, playback: 'paused' }));
+    setDrag({ kind: 'playhead' });
   }
 
   function moveTimeline(event: React.PointerEvent<HTMLDivElement>) {
     if (!drag) return;
-    const deltaMs = ((event.clientX - drag.startX) / editor.zoom) * 1000;
+    const nextTimeMs = pointerTime(event);
+    if (drag.kind === 'playhead') {
+      setEditor((previous) => ({ ...previous, playheadMs: nextTimeMs }));
+      return;
+    }
+    const deltaMs = nextTimeMs - drag.pointerStartMs;
     if (drag.mode === 'move') setProject((previous) => moveProjectClip(previous, drag.clip.id, drag.clip.startMs + deltaMs));
     if (drag.mode === 'left') setProject((previous) => trimProjectClip(previous, drag.clip.id, drag.clip.startMs + deltaMs, 'left'));
     if (drag.mode === 'right') setProject((previous) => trimProjectClip(previous, drag.clip.id, drag.clip.durationMs + deltaMs, 'right'));
   }
 
+  function endTimelineDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (drag?.kind === 'playhead') void syncAndSeek(pointerTime(event));
+    setDrag(undefined);
+  }
+
   function clickTimeline(event: React.MouseEvent<HTMLDivElement>) {
     if (drag || !mainDuration) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    void syncAndSeek(((event.clientX - rect.left) / editor.zoom) * 1000);
+    void syncAndSeek(pointerTime(event));
   }
 
   const ticks = useMemo(() => Array.from({ length: Math.ceil(timelineDuration / 1000) + 1 }, (_, index) => index * 1000), [timelineDuration]);
@@ -178,10 +210,10 @@ export default function App() {
     </section>
     <section className="timeline-panel panel">
       <div className="timeline-toolbar"><b>时间轴</b><label>缩放 <input aria-label="时间轴缩放" type="range" min="45" max="240" value={editor.zoom} onChange={(event) => setEditor((previous) => ({ ...previous, zoom: Number(event.target.value) }))} /></label></div>
-      <div className="timeline-scroll"><div className="timeline-content" style={{ width: `${Math.max(1000, timelineDuration / 1000 * editor.zoom + 160)}px` }} onPointerMove={moveTimeline} onPointerUp={() => setDrag(undefined)} onPointerCancel={() => setDrag(undefined)} onClick={clickTimeline}>
-        <div className="ruler">{ticks.map((time) => <span key={time} style={{ left: `${time / 1000 * editor.zoom}px` }}>{formatTime(time).slice(0, 5)}</span>)}</div>
-        <div className="playhead" style={{ left: `${editor.playheadMs / 1000 * editor.zoom}px` }} />
-        {TRACKS.map((track) => <div className="track" key={track.id}><div className="track-label">{track.label}</div><div className="track-lane">{project.clips.filter((clip) => clip.trackId === track.id).map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selected?.id === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * editor.zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * editor.zoom)}px` }} onPointerDown={(event) => startDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }}><i className="trim left" onPointerDown={(event) => startDrag(event, clip, 'left')} /><span>{clip.type === 'caption' ? clip.text : clip.name}</span>{clip.type !== 'video' && <i className="trim right" onPointerDown={(event) => startDrag(event, clip, 'right')} />}</div>)}</div></div>)}
+      <div className="timeline-scroll" ref={timelineScrollRef}><div className="timeline-content" style={{ width: `${timelineContentWidth(timelineDuration, editor.zoom)}px` }} onPointerMove={moveTimeline} onPointerUp={endTimelineDrag} onPointerCancel={() => setDrag(undefined)} onClick={clickTimeline}>
+        <div className="ruler">{ticks.map((time) => <span key={time} style={{ left: `${timeToTimelineX(time, editor.zoom)}px` }}>{formatTime(time).slice(0, 5)}</span>)}</div>
+        <div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom)}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} />
+        {TRACKS.map((track) => <div className="track" key={track.id}><div className="track-label">{track.label}</div><div className="track-lane" style={{ backgroundSize: `${editor.zoom}px 100%` }}>{project.clips.filter((clip) => clip.trackId === track.id).map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selected?.id === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * editor.zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * editor.zoom)}px` }} onPointerDown={(event) => startClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }}><i className="trim left" onPointerDown={(event) => startClipDrag(event, clip, 'left')} /><span>{clip.type === 'caption' ? clip.text : clip.name}</span>{clip.type !== 'video' && <i className="trim right" onPointerDown={(event) => startClipDrag(event, clip, 'right')} />}</div>)}</div></div>)}
       </div></div>
     </section>
   </main>;

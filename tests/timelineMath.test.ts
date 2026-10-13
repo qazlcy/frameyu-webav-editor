@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveClip, msToUs, snapMs, trimLeft, trimRight, usToMs } from '../src/editor/timelineMath';
+import { moveClip, msToUs, snapMs, timeToTimelineX, timelineContentWidth, timelineXToTime, trimLeft, trimRight, usToMs, viewportXToTime } from '../src/editor/timelineMath';
 import type { TimelineClip } from '../src/editor/types';
 
 const clip: TimelineClip = {
@@ -13,6 +13,17 @@ describe('timeline math', () => {
     expect(usToMs(1_234_000)).toBe(1234);
   });
   it('snaps timeline operations to 100 ms', () => expect(snapMs(1049)).toBe(1000));
+  it('uses the track header as the single zero-time origin', () => {
+    expect(timeToTimelineX(0, 100)).toBe(110);
+    expect(timeToTimelineX(1000, 100)).toBe(210);
+    expect(timelineXToTime(110, 100)).toBe(0);
+  });
+  it('accounts for horizontal scrolling once when mapping a pointer to time', () => {
+    expect(viewportXToTime(210, 200, 300, 100)).toBe(2000);
+  });
+  it('keeps the scroll-content width aligned with the same coordinate system', () => {
+    expect(timelineContentWidth(15_000, 100)).toBe(1658);
+  });
   it('does not move a clip beyond the project boundary', () => {
     expect(moveClip(clip, 9000, 10000).startMs).toBe(7000);
   });

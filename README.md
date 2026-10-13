@@ -49,3 +49,7 @@ Playwright 的 Chromium 已下载到项目内，但当前远程 Ubuntu 缺少 `l
 5. 导出，重新播放 `frameyu-demo.mp4`，对照原声、两类音频和字幕的时间/位置。
 
 详细 API 和阶段测试记录见 [`docs/verification.md`](docs/verification.md)。
+
+## 当前阶段
+
+`phase1-timeline-fixes` 已修复时间轴零点、缩放/滚动坐标换算、可拖动播放头和播放状态同步。第二阶段本地 Chrome 验收清单见 [`docs/verification.md`](docs/verification.md#第二阶段本地-chrome-验收清单)；在该清单完成前，不应将真实预览或 MP4 导出视为已验收。
