@@ -1,5 +1,6 @@
 import { AVCanvas } from '@webav/av-canvas';
 import { AudioClip, Combinator, ImgClip, MP4Clip, renderTxt2ImgBitmap, VisibleSprite } from '@webav/av-cliper';
+import { getProjectDuration } from '../editor/commands';
 import { msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, CaptionPosition, Project, TimelineClip } from '../editor/types';
 
@@ -32,9 +33,13 @@ export class WebAVAdapter {
 
   static async checkCapabilities(): Promise<CapabilityReport> {
     const reasons: string[] = [];
-    if (!('VideoDecoder' in window) || !('VideoEncoder' in window)) reasons.push('浏览器未提供完整 WebCodecs 视频编解码能力。');
-    if (!('AudioDecoder' in window) || !('AudioEncoder' in window)) reasons.push('浏览器未提供完整 WebCodecs 音频编解码能力。');
-    if (!('OffscreenCanvas' in window)) reasons.push('浏览器未提供 OffscreenCanvas。');
+    const hasVideoCodecs = 'VideoDecoder' in window && 'VideoEncoder' in window;
+    const hasAudioCodecs = 'AudioDecoder' in window && 'AudioEncoder' in window;
+    const hasOffscreenCanvas = 'OffscreenCanvas' in window;
+    if (!hasVideoCodecs) reasons.push('浏览器未提供完整 WebCodecs 视频编解码能力。');
+    if (!hasAudioCodecs) reasons.push('浏览器未提供完整 WebCodecs 音频编解码能力。');
+    if (!hasOffscreenCanvas) reasons.push('浏览器未提供 OffscreenCanvas。');
+    if (reasons.length > 0) return { supported: false, reasons };
     try {
       if (!(await Combinator.isSupported({ width: 1280, height: 720 }))) reasons.push('WebAV Combinator 不支持当前 1280×720 编码配置。');
     } catch (error) {
@@ -94,8 +99,9 @@ export class WebAVAdapter {
     this.project = project;
     this.canvas.pause();
     this.clearSprites();
-    const videoClip = project.clips.find((clip) => clip.type === 'video');
-    if (videoClip) await this.addVideoSprite(videoClip, project);
+    for (const clip of project.clips.filter((item) => item.type === 'video').sort((left, right) => left.startMs - right.startMs)) {
+      await this.addVideoSprite(clip, project);
+    }
     for (const clip of project.clips.filter((item) => item.type === 'audio')) await this.addAudioSprite(clip);
     for (const clip of project.clips.filter((item) => item.type === 'caption')) await this.addCaptionSprite(clip);
     await this.canvas.previewFrame(msToUs(Math.max(0, previewMs)));
@@ -113,8 +119,8 @@ export class WebAVAdapter {
   async export(project: Project, onProgress?: (progress: number) => void): Promise<Blob> {
     if (!this.canvas) throw new Error('预览画布尚未初始化');
     await this.sync(project, 0);
-    const durationMs = this.mainDuration(project);
-    if (!durationMs) throw new Error('请先导入有效的主视频。');
+    const durationMs = getProjectDuration(project);
+    if (!durationMs) throw new Error('请先向视频轨添加有效视频。');
     const combinator = await this.canvas.createCombinator({ width: project.width, height: project.height });
     const unsubscribeProgress = combinator.on('OutputProgress', onProgress ?? (() => undefined));
     try {
@@ -143,23 +149,33 @@ export class WebAVAdapter {
     console.log('[WebAV] adapter destroyed');
   }
 
-  private mainDuration(project: Project) {
-    const id = project.mainVideoAssetId;
-    return id ? project.assets.find((asset) => asset.id === id)?.durationMs ?? 0 : 0;
-  }
-
   private async addVideoSprite(clip: TimelineClip, project: Project) {
     const runtime = clip.assetId ? this.assets.get(clip.assetId) : undefined;
-    if (!runtime) throw new Error('主视频文件不存在，请重新导入。');
-    const media = new MP4Clip(runtime.file.stream());
-    const meta = await media.ready;
+    if (!runtime) throw new Error(`视频素材“${clip.name}”不存在，请重新导入。`);
+    let media = new MP4Clip(runtime.file.stream());
+    await media.ready;
+    if (clip.sourceStartMs > 0) {
+      const source = media;
+      const [discarded, remainder] = await source.split(msToUs(clip.sourceStartMs));
+      source.destroy();
+      discarded.destroy();
+      media = remainder;
+    }
+    if (clip.durationMs < usToMs(media.meta.duration)) {
+      const source = media;
+      const [selected, discarded] = await source.split(msToUs(clip.durationMs));
+      source.destroy();
+      discarded.destroy();
+      media = selected;
+    }
+    const meta = media.meta;
     const sprite = new VisibleSprite(media);
     const scale = Math.min(project.width / meta.width, project.height / meta.height);
     sprite.rect.w = Math.round(meta.width * scale);
     sprite.rect.h = Math.round(meta.height * scale);
     sprite.rect.x = Math.round((project.width - sprite.rect.w) / 2);
     sprite.rect.y = Math.round((project.height - sprite.rect.h) / 2);
-    sprite.time = { offset: 0, duration: msToUs(clip.durationMs) };
+    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
     sprite.interactable = 'disabled';
     await this.addSprite(sprite);
   }
@@ -170,12 +186,16 @@ export class WebAVAdapter {
     let audio = new AudioClip(runtime.file.stream(), { volume: clip.volume });
     await audio.ready;
     if (clip.sourceStartMs > 0) {
-      const [discarded, remainder] = await audio.split(msToUs(clip.sourceStartMs));
+      const source = audio;
+      const [discarded, remainder] = await source.split(msToUs(clip.sourceStartMs));
+      source.destroy();
       discarded.destroy();
       audio = remainder;
     }
     if (clip.durationMs < usToMs(audio.meta.duration)) {
-      const [selected, discarded] = await audio.split(msToUs(clip.durationMs));
+      const source = audio;
+      const [selected, discarded] = await source.split(msToUs(clip.durationMs));
+      source.destroy();
       discarded.destroy();
       audio = selected;
     }

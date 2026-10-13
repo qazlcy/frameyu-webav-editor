@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:local-libs": "LD_LIBRARY_PATH=./third_party/browser-libs/rootfs/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=0 playwright test"
   },
   "dependencies": {
     "@webav/av-canvas": "1.2.8",

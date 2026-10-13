@@ -23,7 +23,8 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 官方公开 MP3 夹具 | 已准备 | `tests/fixtures/webav-44.1kHz-2chan.mp3`，来源 WebAV GitHub Pages。 |
 | 导入、预览、混音、字幕、导出实现 | 已实现 / 待浏览器验证 | 适配器使用 WebAV 实际 Clip、Sprite 和 Combinator，不提供模拟结果。 |
 | Playwright Chromium 下载 | 通过 | 下载到项目 `node_modules/playwright-core/.local-browsers`。 |
-| Playwright 真实导出 | 未通过（环境阻断） | 启动 Chromium 前失败：宿主缺少 `libgbm1` 与 `libasound2`；当前账户无 sudo。未将此标记为导出成功。 |
+| Playwright Chromium 启动 | 通过（项目内降级） | `scripts/setup-playwright-libs.sh` 在项目内解包 `libgbm1`、`libasound2` 与其依赖；`npm run test:e2e:local-libs` 能启动无头 Chromium。 |
+| Playwright 真实导出 | 未验证（浏览器能力阻断） | 启动后的远程 Chromium 不存在 `VideoDecoder`、`VideoEncoder`、`AudioDecoder`、`AudioEncoder`。E2E 明确跳过，不将其标记为导出成功。 |
 
 ## 阶段 C/D：编辑工程和裁剪
 
@@ -39,13 +40,13 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 命令 | 结果 |
 | --- | --- |
 | `npm run typecheck` | 通过 |
-| `npm run test` | 通过：5/5 |
+| `npm run test` | 通过：15/15（阶段 3.1 后） |
 | `npm run build` | 通过：Vite 生产构建完成 |
-| `PLAYWRIGHT_BROWSERS_PATH=0 npm run test:e2e` | 环境阻断，见阶段 B |
+| `npm run test:e2e:local-libs` | 远程结果：1 skipped（Chromium 可启动，但缺完整 WebCodecs），见阶段 B / 3.2 |
 
 ## 已知限制
 
-1. 远程容器缺浏览器运行库，尚不能在该容器中声明真实 MP4 导出已验证；请按 README 清单在 Chrome/Edge 复核。
+1. 项目内浏览器运行库已补齐，但远程无头 Chromium 缺失完整 WebCodecs，尚不能在该容器中声明真实 MP4 导出已验证；请按 README 清单在 Chrome/Edge 复核。
 2. 为优先保证状态正确，编辑同步会在 120ms 节流后重建当前 WebAV Sprite 集合，但不会重建 AVCanvas 实例；长视频或高频编辑的性能不属于首版承诺。
 3. 支持范围受浏览器 WebCodecs 编解码器限制；遇到不支持输入会给出错误，不会回退到 FFmpeg。
 
@@ -64,7 +65,30 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 单元测试 | 通过 | `npm run test`：8/8；覆盖零点、缩放、横向滚动、内容宽度、吸附与裁剪边界。 |
 | 类型/构建 | 通过 | `npm run typecheck`、`npm run build`。 |
 
-未验证：浏览器中的拖动手感、实际媒体预览和导出仍待第二阶段 Chrome 验收。远程 Playwright 仍受宿主缺少 `libgbm1` 与 `libasound2` 阻断。
+未验证：浏览器中的拖动手感、实际媒体预览和导出仍待第二阶段 Chrome 验收。远程 Playwright 已可启动，但无头 Chromium 缺失完整 WebCodecs。
+
+## 阶段 3.1：多视频工程数据与素材库
+
+分支：`phase3-multivideo`，起点：`d111049`。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 单一主视频约束移除 | 已完成 | 移除了 `mainVideoAssetId`；所有视频均为 `Asset`，由 `TimelineClip.assetId` 引用。 |
+| 动态 Track | 已完成 | `Track` 包含 `id`、`type`、`name`、`order`、`locked`、`clipIds`；当前 UI 仍固定显示字幕、视频、音乐、音效四轨。 |
+| 多视频素材库 | 已完成 | 连续导入不会覆盖既有素材；首个素材自动加入 0 ms，后续素材须点击“+ 视频轨”追加，同一素材可重复引用。 |
+| 工程时长 | 已完成 | `getProjectDuration` 取所有视频片段的最晚结束，音频与字幕只会被限制在该范围内。 |
+| 数据逻辑测试 | 通过 | `tests/multivideoCommands.test.ts` 覆盖导入保留、追加、重复引用、防重叠、源/工程时间分离、时长和删除共享引用。 |
+
+## 阶段 3.2：WebAV 多视频顺序合成
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| WebAV 1.2.8 裁剪路径 | 已验证（源码/类型） | `MP4Clip.split(timeUs)` 返回两个独立 MP4Clip；安装包源码同时按 `videoSamples` 与 `audioSamples` 分割，故画面和原声共享同一源区间。 |
+| 多视频预览/导出实现 | 已完成 / 待真实浏览器验收 | 适配器按视频片段的 `startMs` 创建独立 `MP4Clip` 与 `VisibleSprite`；先丢弃 `sourceStartMs` 前段，再保留 `durationMs` 段，并设置 Sprite 时间偏移。导出使用全部 Sprite 和 `Combinator.output({ maxTime })`。 |
+| 顺序片段 E2E | 已编写 / 远程跳过 | 使用官方 `webav-123.mp4` 与 `webav-223.mp4`，再叠加 MP3 和字幕；在完整 WebCodecs 浏览器中检查两片段、下载、输出可重新读取元数据、输出时长。远程结果：`1 skipped`。 |
+| `typecheck` / 单测 / 构建 | 通过 | `npm run typecheck`；`npm run test`：15/15；`npm run build`。 |
+
+未验证：远程环境尚未生成或复播含两个视频片段的 MP4，因此不能声称实际多视频拼接已验收。下一步先在本地 Chrome/Edge 执行 README 的拼接清单；确认后才进入阶段 3.3 的视频片段移动、左右裁剪和删除 UI。
 
 ## 第二阶段：本地 Chrome 验收清单
 

@@ -12,6 +12,15 @@ export interface Asset {
   height?: number;
 }
 
+export interface Track {
+  id: string;
+  type: TrackType;
+  name: string;
+  order: number;
+  locked: boolean;
+  clipIds: string[];
+}
+
 export interface CaptionStyle {
   fontSize: number;
   color: string;
@@ -20,7 +29,7 @@ export interface CaptionStyle {
 
 export interface TimelineClip {
   id: string;
-  trackId: TrackType;
+  trackId: string;
   type: 'audio' | 'caption' | 'video';
   assetId?: string;
   name: string;
@@ -35,8 +44,8 @@ export interface TimelineClip {
 export interface Project {
   width: number;
   height: number;
-  mainVideoAssetId?: string;
   assets: Asset[];
+  tracks: Track[];
   clips: TimelineClip[];
 }
 
@@ -49,16 +58,17 @@ export interface EditorState {
   message: string;
 }
 
-export const TRACKS: ReadonlyArray<{ id: TrackType; label: string }> = [
-  { id: 'caption', label: '字幕' },
-  { id: 'video', label: '主视频' },
-  { id: 'music', label: '背景音乐' },
-  { id: 'sfx', label: '音效' },
+export const INITIAL_TRACKS: ReadonlyArray<Track> = [
+  { id: 'caption', type: 'caption', name: '字幕', order: 0, locked: false, clipIds: [] },
+  { id: 'video', type: 'video', name: '视频', order: 1, locked: false, clipIds: [] },
+  { id: 'music', type: 'music', name: '背景音乐', order: 2, locked: false, clipIds: [] },
+  { id: 'sfx', type: 'sfx', name: '音效', order: 3, locked: false, clipIds: [] },
 ];
 
 export const emptyProject = (): Project => ({
   width: 1280,
   height: 720,
   assets: [],
+  tracks: INITIAL_TRACKS.map((track) => ({ ...track, clipIds: [] })),
   clips: [],
 });
