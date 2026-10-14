@@ -126,7 +126,10 @@ export default function App() {
         : timelinePreviewCacheRef.current.ensureThumbnails(asset, file);
       void task.then(() => {
         if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
-      }).catch((error: unknown) => console.warn('[WebAV] timeline media preview unavailable', asset.name, error));
+      }).catch((error: unknown) => {
+        console.warn('[WebAV] timeline media preview unavailable', asset.name, error);
+        if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
+      });
     }
     return () => { cancelled = true; };
   }, [project.assets]);
@@ -286,10 +289,11 @@ export default function App() {
     setEditor((previous) => ({ ...previous, status: 'ready', message: '已创建手动字幕' }));
   }
 
-  function showMaterialLibrary(filter: Extract<MaterialFilter, 'music' | 'sfx'>) {
+  function openLocalAudioLibrary(filter: Extract<MaterialFilter, 'music' | 'sfx'>) {
     setMaterialFilter(filter);
-    setEditor((previous) => ({ ...previous, status: 'ready', message: `已切换到${filter === 'music' ? '音乐' : '音效'}素材库` }));
+    setEditor((previous) => ({ ...previous, status: 'ready', message: `请选择本地${filter === 'music' ? '音乐' : '音效'}文件导入` }));
     requestAnimationFrame(() => materialListRef.current?.scrollTo({ top: 0, behavior: 'smooth' }));
+    (filter === 'music' ? musicInputRef : sfxInputRef).current?.click();
   }
 
   function showGenerationUnavailable(kind: 'music' | 'sfx') {
@@ -573,9 +577,9 @@ export default function App() {
             <div className="material-heading"><h2>素材库</h2><span>本地会话</span></div>
             <button className="material-entry material-primary-entry video-entry" onClick={() => videoInputRef.current?.click()}><i>▣</i><span>导入视频</span><small>本地 MP4</small></button>
             <div className="material-quick-grid">
-              <button className="material-quick-entry music-entry" onClick={() => showMaterialLibrary('music')}>音乐素材库</button>
+              <button className="material-quick-entry music-entry" onClick={() => openLocalAudioLibrary('music')}>音乐素材库</button>
               <button className="material-quick-entry music-entry" onClick={() => showGenerationUnavailable('music')}>生成音乐</button>
-              <button className="material-quick-entry sfx-entry" onClick={() => showMaterialLibrary('sfx')}>音效素材库</button>
+              <button className="material-quick-entry sfx-entry" onClick={() => openLocalAudioLibrary('sfx')}>音效素材库</button>
               <button className="material-quick-entry sfx-entry" onClick={() => showGenerationUnavailable('sfx')}>生成音效</button>
             </div>
             <button className="material-entry material-caption-entry caption-entry" onClick={() => setCaptionComposerOpen((open) => !open)}><i>T</i><span>添加字幕</span><small>手动创建</small></button>
@@ -646,7 +650,7 @@ function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip;
   const clipWidthPx = Math.max(18, clip.durationMs / 1000 * zoom);
   if (clip.type === 'audio') {
     const waveform = cache.getWaveform(clip.assetId);
-    if (!waveform) return null;
+    if (!waveform) return <div className={`audio-waveform-placeholder ${cache.getWaveformError(clip.assetId) ? 'failed' : ''}`} aria-label={cache.getWaveformError(clip.assetId) ? '音频波形分析失败' : '正在分析音频波形'}>{cache.getWaveformError(clip.assetId) ? '波形不可用' : '分析波形…'}</div>;
     const sourceDurationMs = getClipSourceDurationMs(clip);
     const peaks = sampleWaveformRange(waveform, clip.sourceStartMs, sourceDurationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3))));
     return <div className="audio-waveform" aria-label="音频波形" aria-hidden="true">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>;

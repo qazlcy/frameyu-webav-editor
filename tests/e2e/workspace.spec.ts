@@ -75,6 +75,13 @@ test('keeps six material actions and filters fixed above the independently scrol
   expect(await actions.evaluate((node) => getComputedStyle(node).flexShrink)).toBe('0');
   expect(await list.evaluate((node) => getComputedStyle(node).overflowY)).toBe('auto');
 
+  const musicChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '音乐素材库' }).click();
+  expect(await (await musicChooser).element().getAttribute('accept')).toContain('audio/');
+  const sfxChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '音效素材库' }).click();
+  expect(await (await sfxChooser).element().getAttribute('accept')).toContain('audio/');
+
   await page.getByRole('button', { name: '添加字幕' }).click();
   await expect(page.getByLabel('新字幕文字')).toBeVisible();
   await page.getByRole('tab', { name: '视频' }).click();

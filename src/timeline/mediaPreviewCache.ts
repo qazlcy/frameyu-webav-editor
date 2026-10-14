@@ -67,9 +67,11 @@ export class TimelineMediaPreviewCache {
   private thumbnails = new Map<string, VideoThumbnailData>();
   private waveformTasks = new Map<string, Promise<WaveformData>>();
   private thumbnailTasks = new Map<string, Promise<VideoThumbnailData>>();
+  private waveformErrors = new Map<string, string>();
   private disposed = false;
 
   getWaveform(assetId: string | undefined) { return assetId ? this.waveforms.get(assetId) : undefined; }
+  getWaveformError(assetId: string | undefined) { return assetId ? this.waveformErrors.get(assetId) : undefined; }
   getThumbnails(assetId: string | undefined) { return assetId ? this.thumbnails.get(assetId) : undefined; }
 
   ensureWaveform(asset: Asset, file: File): Promise<WaveformData> {
@@ -77,7 +79,13 @@ export class TimelineMediaPreviewCache {
     if (cached) return Promise.resolve(cached);
     const pending = this.waveformTasks.get(asset.id);
     if (pending) return pending;
-    const task = this.loadWaveform(asset, file).finally(() => this.waveformTasks.delete(asset.id));
+    const task = this.loadWaveform(asset, file).then((data) => {
+      this.waveformErrors.delete(asset.id);
+      return data;
+    }).catch((error: unknown) => {
+      this.waveformErrors.set(asset.id, error instanceof Error ? error.message : String(error));
+      throw error;
+    }).finally(() => this.waveformTasks.delete(asset.id));
     this.waveformTasks.set(asset.id, task);
     return task;
   }
@@ -96,6 +104,7 @@ export class TimelineMediaPreviewCache {
     this.disposed = true;
     for (const data of this.thumbnails.values()) for (const frame of data.frames) URL.revokeObjectURL(frame.url);
     this.waveforms.clear();
+    this.waveformErrors.clear();
     this.thumbnails.clear();
   }
 
