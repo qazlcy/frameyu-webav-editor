@@ -4,6 +4,7 @@ import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type Edito
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
+import { sampleThumbnailsForClip, sampleWaveformRange, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
@@ -41,6 +42,8 @@ export default function App() {
   const musicInputRef = useRef<HTMLInputElement>(null);
   const sfxInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
+  const assetFilesRef = useRef(new Map<string, File>());
+  const timelinePreviewCacheRef = useRef(new TimelineMediaPreviewCache());
   const adapterRef = useRef<WebAVAdapter>();
   const durationRef = useRef(0);
   const projectRef = useRef<Project>(emptyProject());
@@ -59,6 +62,7 @@ export default function App() {
   const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all');
   const [captionDraft, setCaptionDraft] = useState<CaptionDraft>({ text: '', startMs: 0, endMs: 3000 });
   const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
+  const [timelinePreviewVersion, setTimelinePreviewVersion] = useState(0);
 
   projectRef.current = project;
   const projectDuration = getProjectDuration(project);
@@ -68,6 +72,7 @@ export default function App() {
   const selectedVideoLayout = selected?.type === 'video' ? selected.videoLayout ?? defaultVideoLayout(project, selectedAsset) : undefined;
   const timelineDuration = Math.max(projectDuration, 10000);
   const tracks = useMemo(() => sortedTracks(project.tracks), [project.tracks]);
+  const assetsById = useMemo(() => new Map(project.assets.map((asset) => [asset.id, asset])), [project.assets]);
   const visibleMaterials = useMemo(() => {
     const assets = project.assets.filter((asset) => materialFilter === 'all' || materialFilter === 'video' && asset.type === 'video' || materialFilter === 'music' && asset.type === 'audio' && (asset.audioKind ?? 'music') === 'music' || materialFilter === 'sfx' && asset.type === 'audio' && asset.audioKind === 'sfx');
     const captions = project.clips.filter((clip) => clip.type === 'caption' && (materialFilter === 'all' || materialFilter === 'caption'));
@@ -104,8 +109,25 @@ export default function App() {
       adapter.destroy();
       audioPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       audioPreviewUrlsRef.current.clear();
+      assetFilesRef.current.clear();
+      timelinePreviewCacheRef.current.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    for (const asset of project.assets) {
+      const file = assetFilesRef.current.get(asset.id);
+      if (!file) continue;
+      const task = asset.type === 'audio'
+        ? timelinePreviewCacheRef.current.ensureWaveform(asset, file)
+        : timelinePreviewCacheRef.current.ensureThumbnails(asset, file);
+      void task.then(() => {
+        if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
+      }).catch((error: unknown) => console.warn('[WebAV] timeline media preview unavailable', asset.name, error));
+    }
+    return () => { cancelled = true; };
+  }, [project.assets]);
 
   useEffect(() => {
     if (!adapterReady || !projectDuration) return;
@@ -154,6 +176,7 @@ export default function App() {
       const info = await adapterRef.current!.inspectFile(file, 'video');
       const asset: Asset = { id: makeId('video'), name: file.name, type: 'video', mimeType: file.type, ...info };
       adapterRef.current!.registerAsset(asset, file);
+      assetFilesRef.current.set(asset.id, file);
       setProject((previous) => {
         const firstVideo = !previous.assets.some((item) => item.type === 'video');
         const withAsset = addAsset(previous, asset);
@@ -172,6 +195,7 @@ export default function App() {
       const info = await adapterRef.current!.inspectFile(file, 'audio');
       const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, ...info };
       adapterRef.current!.registerAsset(asset, file);
+      assetFilesRef.current.set(asset.id, file);
       audioPreviewUrlsRef.current.set(asset.id, URL.createObjectURL(file));
       setProject((previous) => ({ ...previous, assets: [...previous.assets, asset] }));
       setEditor((previous) => ({ ...previous, status: 'ready', message: `已导入${audioKind === 'music' ? '音乐' : '音效'} ${file.name}` }));
@@ -520,7 +544,7 @@ export default function App() {
         <div className="timeline-toolbar"><b>时间轴</b><div className="timeline-actions"><button onClick={() => createTrack('caption')}>+ 字幕轨</button><button onClick={() => createTrack('video')}>+ 视频轨</button><button onClick={() => createTrack('music')}>+ 音乐轨</button><button onClick={() => createTrack('sfx')}>+ 音效轨</button><label>缩放 <input aria-label="时间轴缩放" type="range" min="45" max="240" value={editor.zoom} onChange={(event) => setEditor((previous) => ({ ...previous, zoom: Number(event.target.value) }))} /></label></div></div>
         <div className="timeline-viewport">
           <div className="timeline-ruler-row"><div className="timeline-ruler-label">轨道</div><div className="timeline-ruler-scroll" ref={rulerScrollRef} onScroll={syncRulerScroll}><div className="ruler" style={{ width: `${contentWidth - TRACK_HEADER_WIDTH_PX}px` }}>{ticks.map((time) => <span key={time} style={{ left: `${timeToTimelineX(time, editor.zoom) - TRACK_HEADER_WIDTH_PX}px` }}>{formatTime(time).slice(0, 5)}</span>)}</div></div></div>
-          <div className="timeline-body-viewport"><div className="timeline-scroll" ref={timelineScrollRef} onScroll={syncBodyScroll}><div className="timeline-content" style={{ width: `${contentWidth}px` }} onClick={clickTimeline}>{tracks.map((track) => <TrackRow key={track.id} track={track} clips={project.clips.filter((clip) => clip.trackId === track.id)} selectedClipId={selected?.id} selectedTrackId={selectedTrackId} videoTrackCount={tracks.filter((item) => item.type === 'video').length} zoom={editor.zoom} onSelectTrack={setSelectedTrackId} onStartTrackDrag={startTrackDrag} onStartTrackResize={startTrackResize} onStartClipDrag={startClipDrag} onRename={(name) => setProject((previous) => renameTrack(previous, track.id, name))} onDelete={() => deleteTrack(track)} onSelectClip={(clip) => { setSelectedTrackId(track.id); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }} />)}</div></div><div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom) - timelineScrollLeft}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} /></div>
+          <div className="timeline-body-viewport"><div className="timeline-scroll" ref={timelineScrollRef} onScroll={syncBodyScroll}><div className="timeline-content" style={{ width: `${contentWidth}px` }} onClick={clickTimeline}>{tracks.map((track) => <TrackRow key={track.id} track={track} clips={project.clips.filter((clip) => clip.trackId === track.id)} assetsById={assetsById} previewCache={timelinePreviewCacheRef.current} previewVersion={timelinePreviewVersion} selectedClipId={selected?.id} selectedTrackId={selectedTrackId} videoTrackCount={tracks.filter((item) => item.type === 'video').length} zoom={editor.zoom} onSelectTrack={setSelectedTrackId} onStartTrackDrag={startTrackDrag} onStartTrackResize={startTrackResize} onStartClipDrag={startClipDrag} onRename={(name) => setProject((previous) => renameTrack(previous, track.id, name))} onDelete={() => deleteTrack(track)} onSelectClip={(clip) => { setSelectedTrackId(track.id); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }} />)}</div></div><div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom) - timelineScrollLeft}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} /></div>
         </div>
       </section>
     </div>
@@ -545,16 +569,33 @@ function Divider({ kind, onPointerDown, onDoubleClick }: { kind: LayoutDrag['kin
   return <div role="separator" aria-label={label} aria-orientation={horizontal ? 'horizontal' : 'vertical'} tabIndex={0} className={`layout-divider ${horizontal ? 'horizontal' : 'vertical'}`} onPointerDown={(event) => onPointerDown(event, kind)} onDoubleClick={onDoubleClick} />;
 }
 
-function TrackRow({ track, clips, selectedClipId, selectedTrackId, videoTrackCount, zoom, onSelectTrack, onStartTrackDrag, onStartTrackResize, onStartClipDrag, onRename, onDelete, onSelectClip }: { track: Track; clips: TimelineClip[]; selectedClipId?: string; selectedTrackId: string; videoTrackCount: number; zoom: number; onSelectTrack: (trackId: string) => void; onStartTrackDrag: (event: React.PointerEvent, track: Track) => void; onStartTrackResize: (event: React.PointerEvent, track: Track) => void; onStartClipDrag: (event: React.PointerEvent, clip: TimelineClip, mode: 'move' | 'left' | 'right') => void; onRename: (name: string) => void; onDelete: () => void; onSelectClip: (clip: TimelineClip) => void }) {
+function TrackRow({ track, clips, assetsById, previewCache, previewVersion, selectedClipId, selectedTrackId, videoTrackCount, zoom, onSelectTrack, onStartTrackDrag, onStartTrackResize, onStartClipDrag, onRename, onDelete, onSelectClip }: { track: Track; clips: TimelineClip[]; assetsById: ReadonlyMap<string, Asset>; previewCache: TimelineMediaPreviewCache; previewVersion: number; selectedClipId?: string; selectedTrackId: string; videoTrackCount: number; zoom: number; onSelectTrack: (trackId: string) => void; onStartTrackDrag: (event: React.PointerEvent, track: Track) => void; onStartTrackResize: (event: React.PointerEvent, track: Track) => void; onStartClipDrag: (event: React.PointerEvent, clip: TimelineClip, mode: 'move' | 'left' | 'right') => void; onRename: (name: string) => void; onDelete: () => void; onSelectClip: (clip: TimelineClip) => void }) {
   return <div className={`track ${selectedTrackId === track.id ? 'selected-track' : ''}`} id={`track-row-${track.id}`} style={{ height: `${track.heightPx}px` }} onClick={() => onSelectTrack(track.id)}>
     <div className="track-label" onClick={(event) => event.stopPropagation()}>
       <button className="track-grip" aria-label={`拖动${track.name}排序`} title="拖动排序" onPointerDown={(event) => onStartTrackDrag(event, track)}>⠿</button>
       <input aria-label={`${track.name}名称`} value={track.name} onChange={(event) => onRename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} />
       <button className="track-delete" aria-label={`删除${track.name}`} title={track.clipIds.length ? '含有片段的轨道不能删除' : track.type === 'video' && videoTrackCount <= 1 ? '至少保留一条视频轨' : '删除空轨道'} disabled={track.clipIds.length > 0 || track.type === 'video' && videoTrackCount <= 1} onClick={onDelete}>×</button>
     </div>
-    <div className="track-lane" style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><span>{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
+    <div className="track-lane" data-preview-version={previewVersion} style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><TimelineClipPreview clip={clip} asset={clip.assetId ? assetsById.get(clip.assetId) : undefined} cache={previewCache} zoom={zoom} /><span className="timeline-clip-label">{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
     <div className="track-height-handle" aria-label={`调整${track.name}高度`} onPointerDown={(event) => onStartTrackResize(event, track)} />
   </div>;
+}
+
+function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip; asset?: Asset; cache: TimelineMediaPreviewCache; zoom: number }) {
+  const clipWidthPx = Math.max(18, clip.durationMs / 1000 * zoom);
+  if (clip.type === 'audio') {
+    const waveform = cache.getWaveform(clip.assetId);
+    if (!waveform) return null;
+    const peaks = sampleWaveformRange(waveform, clip.sourceStartMs, clip.durationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3))));
+    return <div className="audio-waveform" aria-label="音频波形" aria-hidden="true">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>;
+  }
+  if (clip.type === 'video' && asset) {
+    const thumbnails = cache.getThumbnails(clip.assetId);
+    if (!thumbnails) return null;
+    const frames = sampleThumbnailsForClip(thumbnails, clip, Math.min(16, Math.max(1, Math.ceil(clipWidthPx / 84))));
+    return <div className="video-thumbnails" aria-label="视频缩略图" aria-hidden="true">{frames.map((frame, index) => <img key={`${frame.timeMs}-${index}`} src={frame.url} draggable={false} alt="" />)}</div>;
+  }
+  return null;
 }
 
 function Properties({ clip, asset, project, projectDuration, onUpdate, onUpdateVideoLayout, onSetVideoLayoutMode, onDelete }: { clip: TimelineClip; asset?: Asset; project: Project; projectDuration: number; onUpdate: (patch: Partial<TimelineClip>) => void; onUpdateVideoLayout: (patch: Partial<VideoLayout>) => void; onSetVideoLayoutMode: (mode: 'full' | 'pip') => void; onDelete: () => void }) {

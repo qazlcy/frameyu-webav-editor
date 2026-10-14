@@ -134,7 +134,7 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | WebAV 1.2.8 API 审查 | 已验证（声明文件） | 读取 `dist/av-cliper.d.ts`：`AudioClip.getPCMData()`、`MP4Clip.thumbnails()`、`MP4Clip.split()`、`VisibleSprite.rect/zIndex/opacity/time` 均存在。本期不调用波形、缩略图、画中画或倍速接口，这些留给 5.2～5.5。 |
 | 自动检查 | 通过 | `npm run typecheck`、Vitest 24/24、`npm run build` 通过；Playwright 工作台 2 项通过，真实媒体导出 1 项因无头 Chromium 无完整 WebCodecs 而 skipped。 |
 
-未验证：远程无头 Chromium 不能完成 MP4/音频 WebCodecs 解码编码，因此本地音频试听、手动字幕实际画面，以及添加后的真实预览/MP4 导出均须在 Chrome/Edge 执行 README 第 5、6、12 项；它们不能因结构 E2E 通过而标为已验证。
+未验证：远程无头 Chromium 不能完成 MP4/音频 WebCodecs 解码编码，因此本地音频试听、手动字幕实际画面，以及添加后的真实预览/MP4 导出均须在 Chrome/Edge 执行 README 中对应的素材、字幕和导出项目；它们不能因结构 E2E 通过而标为已验证。
 
 ## Phase 5.2：多视频轨道与画中画叠加
 
@@ -150,7 +150,22 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 
 图层规则：视频轨按 `Track.order` 从小到大对应 `zIndex 0…n`；数值较大的轨绘制在更上方。字幕固定为 `zIndex 10000`，因此始终位于所有视频之上。视频几何、透明度、静音与音量均属于工程快照；预览同步和 `export(project)` 都使用该同一快照。
 
-未验证：尚未能在远程浏览器实际解码两个带声视频并生成 MP4，因而视频 A/B 的重叠画面、真实混音、裁剪后原声、层级遮挡及导出可播放性必须由本地 Chrome/Edge 按 README 第 4～6、15 项确认，不能将逻辑/E2E 结果替代这些媒体结论。
+未验证：尚未能在远程浏览器实际解码两个带声视频并生成 MP4，因而视频 A/B 的重叠画面、真实混音、裁剪后原声、层级遮挡及导出可播放性必须由本地 Chrome/Edge 按 README 第 4～6、17 项确认，不能将逻辑/E2E 结果替代这些媒体结论。
+
+## Phase 5.3：音频波形与视频缩略图
+
+分支：`phase5-waveform-thumbnails`，基线：`18bce98`。本阶段是运行时显示辅助层，不改变 Project 的媒体合成语义，也不增加 FFmpeg、服务端或 AI 依赖。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| PCM 波形 | 已实现 / 待真实浏览器验收 | `TimelineMediaPreviewCache` 以 Asset ID 创建 `AudioClip(file.stream())`，在 `ready` 后调用 `getPCMData()`，把多声道 PCM 降采样为最多 1200 个峰值。完整 PCM 不写入 React 或 Project。 |
+| 视频缩略图 | 已实现 / 待真实浏览器验收 | 缓存以 Asset ID 创建 `MP4Clip(file.stream())`，调用 `thumbnails(160, { start: 0, end: durationUs, step })`。帧 Blob 转为 Object URL，仅在编辑器卸载时释放。 |
+| 裁剪与缩放映射 | 通过（纯逻辑测试） | 波形和缩略图按 `sourceStartMs + durationMs` 选择对应源窗口；时间轴缩放仅改变显示采样密度，轨高与滚动由现有 CSS 布局自适应。展示层 `pointer-events: none`，不会覆盖移动、裁剪、跨轨或播放头操作。 |
+| 缓存与生命周期 | 已实现 | 同一 Asset 的多个 TimelineClip 共享一份 Promise/分析结果；删除片段不会释放缓存，因而不会破坏仍引用同一素材的其他片段。无素材删除入口，缓存及缩略图 Object URL 在编辑器卸载时统一释放。 |
+| 视频原声波形 | 未实现（明确降级） | 本期优先完成独立音乐/音效的真实 PCM 波形与视频缩略图；视频原声波形留作后续性能评估，不影响视频原声预览或导出。 |
+| 自动检查 | 通过 | 新增 3 个缓存/源窗口单测；总计 `npm run test` 31/31，`typecheck`、生产构建通过；工作台 Playwright 3 项通过，真实媒体导出仍 skipped。 |
+
+未验证：远程 Chromium 缺完整 WebCodecs，无法在容器中确认 PCM 解码、真实帧抽取和时间轴视觉结果。请在本地 Chrome/Edge 按 README 第 7、8 项检查波形幅度、缩略图源区间、裁剪/缩放/拖拽后的对齐，以及不会影响预览和 MP4 导出。
 
 ## 第二阶段：本地 Chrome 验收清单
 
