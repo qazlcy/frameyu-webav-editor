@@ -233,3 +233,20 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 自动检查 | 通过 | `npm run typecheck`、Vitest 48/48、`npm run build` 通过。新增覆盖异步峰值等价性、串行队列、失败不阻塞、Asset 任务去重、缓存与失败重试。 |
 
 本地 Chrome/Edge 性能验收：依次导入约 10 秒 MP3、30～60 秒 WAV、约 3 分钟 MP3；每次展开素材列表的“波形诊断日志”并复制 JSON，记录 `readyMs`、`peakBuildMs`、`totalMs`。随后连续导入三条音频，确认卡片依次排队且页面仍可操作；将同一素材反复加入时间轴，确认不产生新的 `decode-ready` 条目。对不支持或损坏的文件确认失败文案和重试入口。真实 PCM 波形显示、实际解码耗时、内存峰值及卡顿情况均为本地浏览器待验证，不能标为远程通过。
+
+## Phase 6.2：视频原声音频波形
+
+分支：`phase6-waveform-crop`，基线：`f85c5c5`。本阶段只新增视频原声音频分析与时间轴展示；未开始八控制点画面裁切，也未改变 AVCanvas 或 MP4 导出的媒体实例。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| WebAV 1.2.8 路径核查 | 已验证（安装源码） | `MP4Clip.meta` 的 `audioChanCount`/`audioSampleRate` 用于判断是否存在音轨。`splitTrack()` 返回的是仅含视频或仅含音频 samples 的 **`MP4Clip[]`**，不是 `AudioClip`，因此不存在 `getPCMData()`。源码中纯音频轨 `tick()` 不调用 VideoDecoder。 |
+| PCM 获取 | 已实现 / 待真实浏览器验收 | 对拆出的音频 MP4Clip 每 100 ms 连续调用 `tick(timeUs)`；WebAV 源码规定间隔超过 100 ms 会重置音频 finder，故该步长确保返回连续 PCM。PCM 抵达时直接累积到固定 1200 桶峰值，不保留完整音轨数组。 |
+| 无音轨与静音 | 通过（单测） | 元数据没有有效声道/采样率时写入“无音轨”且不调用 `splitTrack`；静音 PCM 正常生成接近零的峰值，不会被误判为无音轨。 |
+| 统一队列、状态和缓存 | 通过（单测） | 视频任务复用 Phase 6.1 的单并发 `AnalysisTaskQueue`、状态、失败重试和诊断日志。缓存键为 `video:<assetId>`，独立音频为 `audio:<assetId>`；相同视频重复引用返回同一任务/缓存。缩略图任务仍独立，任一失败不阻断另一项。 |
+| 资源与媒体隔离 | 已实现 | 分析专用的源 MP4Clip 和所有 `splitTrack` 结果在 `finally` 中销毁；它们不注册 Sprite、不连接 AVCanvas，因此不会增加可播放音轨、影响时间轴分割或导出混音。 |
+| 时间轴显示 | 已实现 / 工作台待浏览器验收 | 有缓存时视频片段上半显示缩略图、下半显示原声波形；取样继续使用既有 `sourceStartMs`、`sourceDurationMs` 与 playbackRate 映射。无音轨只显示缩略图；视频 `muted` 不影响素材原声波形。 |
+| 自动检查 | 通过 | 新增有声/无声/静音视频、连续 tick、缓存去重、失败重试、分割/跨轨/静音/倍速源窗口映射和流式峰值单测；`npm run typecheck`、Vitest 53/53 通过。 |
+| Playwright 工作台回归 | 部分通过 | 直接运行 `npm run test:e2e` 时用户缓存内缺少 `chromium_headless_shell`，4 项均未启动。项目本地浏览器依赖命令 `npm run test:e2e:local-libs` 为 3 通过、1 跳过；跳过项需要完整 WebCodecs 的真实 MP4 合成，不能视为媒体功能通过。 |
+
+本地 Chrome/Edge 验收：导入有明显说话声的 MP4、带背景音乐的 MP4、无音轨 MP4、静音 MP4；检查素材卡状态、视频片段上下分层显示及诊断字段 `trackSplitMs`、`audioTickMs`。随后测试左/右裁剪、分割、同源重复引用、跨轨、静音及 0.5×/2×；波形必须保持对应源区间，静音不能清除它。预览与导出应保持原声只播放一次。远程 Chromium 缺 WebCodecs，实际 MP4 解码、视觉分层与导出仍为未验证。

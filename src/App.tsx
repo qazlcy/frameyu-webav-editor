@@ -118,10 +118,10 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => timelinePreviewCacheRef.current.subscribe((assetId) => {
+  useEffect(() => timelinePreviewCacheRef.current.subscribe((asset) => {
     const updateRequestedAt = performance.now();
     setTimelinePreviewVersion((version) => version + 1);
-    requestAnimationFrame(() => timelinePreviewCacheRef.current.recordUiRendered(assetId, updateRequestedAt));
+    requestAnimationFrame(() => timelinePreviewCacheRef.current.recordUiRendered(asset, updateRequestedAt));
   }), []);
 
   useEffect(() => {
@@ -129,10 +129,10 @@ export default function App() {
     for (const asset of project.assets) {
       const file = assetFilesRef.current.get(asset.id);
       if (!file) continue;
-      const task = asset.type === 'audio'
-        ? timelinePreviewCacheRef.current.ensureWaveform(asset, file)
-        : timelinePreviewCacheRef.current.ensureThumbnails(asset, file);
-      void task.then(() => {
+      const tasks = asset.type === 'audio'
+        ? [timelinePreviewCacheRef.current.ensureWaveform(asset, file)]
+        : [timelinePreviewCacheRef.current.ensureThumbnails(asset, file), timelinePreviewCacheRef.current.ensureVideoWaveform(asset, file)];
+      for (const task of tasks) void task.then(() => {
         if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
       }).catch((error: unknown) => {
         console.warn('[WebAV] timeline media preview unavailable', asset.name, error);
@@ -197,12 +197,14 @@ export default function App() {
   }, [editor.playheadMs, project, selected]);
 
   async function importVideo(file: File) {
+    const fileSelectedAt = performance.now();
     setEditor((previous) => ({ ...previous, status: 'loading', message: '正在解析视频…' }));
     try {
       const info = await adapterRef.current!.inspectFile(file, 'video');
       const asset: Asset = { id: makeId('video'), name: file.name, type: 'video', mimeType: file.type, ...info };
       adapterRef.current!.registerAsset(asset, file);
       assetFilesRef.current.set(asset.id, file);
+      timelinePreviewCacheRef.current.noteWaveformAssetImported(asset, fileSelectedAt);
       setProject((previous) => {
         const firstVideo = !previous.assets.some((item) => item.type === 'video');
         const withAsset = addAsset(previous, asset);
@@ -239,7 +241,10 @@ export default function App() {
       setEditor((previous) => ({ ...previous, status: 'error', message: `找不到“${asset.name}”的本地文件，无法重新分析。` }));
       return;
     }
-    void timelinePreviewCacheRef.current.retryWaveform(asset, file).catch((error: unknown) => {
+    const task = asset.type === 'audio'
+      ? timelinePreviewCacheRef.current.retryWaveform(asset, file)
+      : timelinePreviewCacheRef.current.retryVideoWaveform(asset, file);
+    void task.catch((error: unknown) => {
       console.warn('[WebAV] waveform retry failed', asset.name, error);
     });
   }
@@ -621,9 +626,9 @@ export default function App() {
             <div className="material-filters" role="tablist" aria-label="素材筛选">{([['all', '全部'], ['video', '视频'], ['music', '音乐'], ['sfx', '音效'], ['caption', '字幕']] as const).map(([filter, label]) => <button key={filter} role="tab" aria-selected={materialFilter === filter} className={materialFilter === filter ? 'active' : ''} onClick={() => setMaterialFilter(filter)}>{label}</button>)}</div>
           </div>
           <div className="material-list" ref={materialListRef} aria-label="素材列表">
-            {visibleMaterials.assets.map((asset) => <MaterialAssetCard key={asset.id} asset={asset} previewUrl={audioPreviewUrlsRef.current.get(asset.id)} projectDuration={projectDuration} analysisStatus={timelinePreviewCacheRef.current.getWaveformStatus(asset.id)} onRetryWaveform={() => retryWaveform(asset)} onAddVideo={() => addVideo(asset)} onAddAudio={(kind) => addAudio(asset, kind)} />)}
+            {visibleMaterials.assets.map((asset) => <MaterialAssetCard key={asset.id} asset={asset} previewUrl={audioPreviewUrlsRef.current.get(asset.id)} projectDuration={projectDuration} analysisStatus={timelinePreviewCacheRef.current.getWaveformStatus(asset.id, asset.type)} onRetryWaveform={() => retryWaveform(asset)} onAddVideo={() => addVideo(asset)} onAddAudio={(kind) => addAudio(asset, kind)} />)}
             {visibleMaterials.captions.map((clip) => <button className="asset-card caption-material-card" key={clip.id} onClick={() => { setSelectedTrackId(clip.trackId); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }}><span className="asset-icon">T</span><span className="asset-card-body"><b title={clip.text}>{clip.text || '空字幕'}</b><small>字幕 · {formatTime(clip.durationMs)} · 编辑</small></span></button>)}
-            {project.assets.some((asset) => asset.type === 'audio') && <details className="waveform-diagnostics"><summary>波形诊断日志（{waveformDiagnostics.length}）</summary><button onClick={() => void copyWaveformDiagnostics()}>复制诊断日志</button><pre>{waveformDiagnostics.slice(-24).map((entry) => `${entry.assetName} · ${entry.phase} · ${entry.message}`).join('\n') || '尚未创建分析任务。'}</pre></details>}
+            {project.assets.some((asset) => asset.type === 'audio' || asset.type === 'video') && <details className="waveform-diagnostics"><summary>波形诊断日志（{waveformDiagnostics.length}）</summary><button onClick={() => void copyWaveformDiagnostics()}>复制诊断日志</button><pre>{waveformDiagnostics.slice(-24).map((entry) => `${entry.assetName} · ${entry.phase} · ${entry.message}`).join('\n') || '尚未创建分析任务。'}</pre></details>}
             {!visibleMaterials.assets.length && !visibleMaterials.captions.length && <p className="material-empty">暂无该类型素材。使用上方入口导入本地文件或手动创建字幕。</p>}
           </div>
         </aside>
@@ -652,11 +657,12 @@ function MaterialAssetCard({ asset, previewUrl, projectDuration, analysisStatus,
   const audioKind = asset.audioKind ?? 'music';
   const kindLabel = asset.type === 'video' ? '视频' : audioKind === 'music' ? '音乐' : '音效';
   const resolution = asset.type === 'video' && asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : '';
-  const analysisLabel = analysisStatus?.phase === 'queued' ? '等待分析' : analysisStatus?.phase === 'decoding' ? '正在解码' : analysisStatus?.phase === 'sampling' ? '正在生成波形' : analysisStatus?.phase === 'ready' ? '波形分析完成' : analysisStatus?.phase === 'failed' ? '波形分析失败' : '等待分析';
+  const analysisLabel = analysisStatus?.phase === 'queued' ? '等待分析' : analysisStatus?.phase === 'decoding' ? '正在解码' : analysisStatus?.phase === 'sampling' ? '正在生成波形' : analysisStatus?.phase === 'ready' ? '波形分析完成' : analysisStatus?.phase === 'no-audio' ? '无音轨' : analysisStatus?.phase === 'failed' ? '波形分析失败' : '等待分析';
   return <article className={`asset-card ${asset.type === 'video' ? 'video' : audioKind}`}>
     <span className="asset-icon" aria-hidden="true">{asset.type === 'video' ? '▣' : audioKind === 'music' ? '♫' : '✦'}</span>
     <div className="asset-card-body"><b title={asset.name}>{asset.name}</b><small>{kindLabel} · {formatTime(asset.durationMs)}{resolution}</small>
-      {asset.type === 'video' ? <button onClick={onAddVideo}>+ 视频轨</button> : <><div className={`waveform-analysis-status ${analysisStatus?.phase ?? 'queued'}`} aria-label={`${asset.name}波形${analysisLabel}`}><span>{analysisStatus?.phase === 'decoding' || analysisStatus?.phase === 'sampling' ? '◌ ' : ''}{analysisLabel}</span>{analysisStatus?.phase === 'failed' && <><small title={analysisStatus.error}>原因：{analysisStatus.error || '未知错误'}</small><button className="secondary" onClick={onRetryWaveform}>重新分析</button></>}</div><div className="asset-card-actions"><button onClick={() => onAddAudio(audioKind)}>+ {audioKind === 'music' ? '音乐' : '音效'}</button><button className="secondary" onClick={() => onAddAudio(audioKind === 'music' ? 'sfx' : 'music')}>作为{audioKind === 'music' ? '音效' : '音乐'}</button></div>{previewUrl ? <audio aria-label={`试听 ${asset.name}`} controls preload="metadata" src={previewUrl} /> : <small className="audio-unavailable">本会话未保留试听源</small>}</>}
+      <div className={`waveform-analysis-status ${analysisStatus?.phase ?? 'queued'}`} aria-label={`${asset.name}波形${analysisLabel}`}><span>{analysisStatus?.phase === 'decoding' || analysisStatus?.phase === 'sampling' ? '◌ ' : ''}{analysisLabel}</span>{analysisStatus?.phase === 'failed' && <><small title={analysisStatus.error}>原因：{analysisStatus.error || '未知错误'}</small><button className="secondary" onClick={onRetryWaveform}>重新分析</button></>}</div>
+      {asset.type === 'video' ? <button onClick={onAddVideo}>+ 视频轨</button> : <><div className="asset-card-actions"><button onClick={() => onAddAudio(audioKind)}>+ {audioKind === 'music' ? '音乐' : '音效'}</button><button className="secondary" onClick={() => onAddAudio(audioKind === 'music' ? 'sfx' : 'music')}>作为{audioKind === 'music' ? '音效' : '音乐'}</button></div>{previewUrl ? <audio aria-label={`试听 ${asset.name}`} controls preload="metadata" src={previewUrl} /> : <small className="audio-unavailable">本会话未保留试听源</small>}</>}
     </div>
   </article>;
 }
@@ -690,9 +696,12 @@ function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip;
   }
   if (clip.type === 'video' && asset) {
     const thumbnails = cache.getThumbnails(clip.assetId);
-    if (!thumbnails) return null;
-    const frames = sampleThumbnailsForClip(thumbnails, clip, Math.min(16, Math.max(1, Math.ceil(clipWidthPx / 84))));
-    return <div className="video-thumbnails" aria-label="视频缩略图" aria-hidden="true">{frames.map((frame, index) => <img key={`${frame.timeMs}-${index}`} src={frame.url} draggable={false} alt="" />)}</div>;
+    const waveform = cache.getVideoWaveform(clip.assetId);
+    if (!thumbnails && !waveform) return null;
+    const sourceDurationMs = getClipSourceDurationMs(clip);
+    const frames = thumbnails ? sampleThumbnailsForClip(thumbnails, clip, Math.min(16, Math.max(1, Math.ceil(clipWidthPx / 84)))) : [];
+    const peaks = waveform ? sampleWaveformRange(waveform, clip.sourceStartMs, sourceDurationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3)))) : [];
+    return <div className={`video-media-preview ${waveform ? 'has-waveform' : ''}`} aria-hidden="true">{frames.length > 0 && <div className="video-thumbnails" aria-label="视频缩略图">{frames.map((frame, index) => <img key={`${frame.timeMs}-${index}`} src={frame.url} draggable={false} alt="" />)}</div>}{peaks.length > 0 && <div className="video-audio-waveform" aria-label="视频原声波形">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>}</div>;
   }
   return null;
 }

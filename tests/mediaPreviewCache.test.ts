@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const waveformMock = vi.hoisted(() => ({ calls: 0, fail: false, pcm: [new Float32Array([0, 0.25, -0.5, 1])] }));
+const waveformMock = vi.hoisted(() => ({
+  calls: 0, fail: false, pcm: [new Float32Array([0, 0.25, -0.5, 1])],
+  videoCalls: 0, videoSplitCalls: 0, videoTickCalls: 0, videoDestroyCalls: 0, videoHasAudio: true, videoFail: false,
+  videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0.1])], [new Float32Array([0.9])]] as Float32Array[][],
+}));
 
 vi.mock('@webav/av-cliper', () => ({
   AudioClip: class {
@@ -12,20 +16,48 @@ vi.mock('@webav/av-cliper', () => ({
     getPCMData() { return waveformMock.pcm; }
     destroy() { /* no browser decoder to release in the test double */ }
   },
-  MP4Clip: class {},
+  MP4Clip: class MockMP4Clip {
+    private readonly audioOnly: boolean;
+    private tickIndex = 0;
+    constructor(_source?: unknown, audioOnly = false) {
+      this.audioOnly = audioOnly;
+      waveformMock.videoCalls += 1;
+    }
+    get meta() {
+      return {
+        duration: waveformMock.videoDurationUs, width: this.audioOnly ? 0 : 640, height: this.audioOnly ? 0 : 360,
+        audioSampleRate: waveformMock.videoHasAudio ? waveformMock.videoSampleRate : 0,
+        audioChanCount: waveformMock.videoHasAudio ? 2 : 0,
+      };
+    }
+    get ready() { return Promise.resolve(this.meta); }
+    async splitTrack() {
+      waveformMock.videoSplitCalls += 1;
+      return waveformMock.videoHasAudio ? [new MockMP4Clip(undefined, true)] : [];
+    }
+    async tick() {
+      waveformMock.videoTickCalls += 1;
+      if (waveformMock.videoFail) throw new Error('mock video audio decode failed');
+      return { audio: waveformMock.videoChunks[this.tickIndex++] ?? [new Float32Array()], state: 'success' as const };
+    }
+    destroy() { waveformMock.videoDestroyCalls += 1; }
+  },
 }));
 
 import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformRange, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
 import { TimelineMediaPreviewCache } from '../src/timeline/mediaPreviewCache';
 import type { TimelineClip } from '../src/editor/types';
 import type { Asset } from '../src/editor/types';
-import { AnalysisTaskQueue, buildWaveformPeaksAsync } from '../src/timeline/waveformAnalysis';
+import { AnalysisTaskQueue, buildWaveformPeaksAsync, StreamingWaveformPeakAccumulator } from '../src/timeline/waveformAnalysis';
 
 const clip = (sourceStartMs: number, durationMs: number): TimelineClip => ({
   id: 'clip', trackId: 'music', type: 'audio', assetId: 'asset', name: 'asset', startMs: 0, sourceStartMs, durationMs, volume: 1,
 });
 
 describe('timeline media preview calculations', () => {
+  beforeEach(() => { vi.spyOn(console, 'info').mockImplementation(() => undefined); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it('reduces multi-channel PCM into bounded peak values', () => {
     const peaks = buildWaveformPeaks([new Float32Array([0, -0.2, 0.7, -1]), new Float32Array([0.1, 0.4, -0.3, 0.2])], 2);
     expect(peaks[0]).toBeCloseTo(0.4);
@@ -90,10 +122,76 @@ describe('timeline media preview calculations', () => {
     cache.dispose();
   });
 
+  it('streams an MP4 audio-only tick track into cached video peaks without decoding video frames', async () => {
+    const cache = new TimelineMediaPreviewCache();
+    const asset: Asset = { id: 'video-a', name: 'spoken.mp4', type: 'video', mimeType: 'video/mp4', durationMs: 200 };
+    const file = new File(['video'], 'spoken.mp4', { type: 'video/mp4' });
+    Object.assign(waveformMock, { videoCalls: 0, videoSplitCalls: 0, videoTickCalls: 0, videoDestroyCalls: 0, videoHasAudio: true, videoFail: false, videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0.1])], [new Float32Array([0.9])]] });
+    cache.noteWaveformAssetImported(asset, performance.now());
+    const first = cache.ensureVideoWaveform(asset, file);
+    const duplicate = cache.ensureVideoWaveform(asset, file);
+    expect(duplicate).toBe(first);
+    await expect(first).resolves.toMatchObject({ peaks: [expect.closeTo(0.1), expect.closeTo(0.9)] });
+    expect(waveformMock.videoSplitCalls).toBe(1);
+    expect(waveformMock.videoTickCalls).toBe(2);
+    expect(waveformMock.videoDestroyCalls).toBeGreaterThanOrEqual(2);
+    expect(cache.getWaveformStatus(asset.id, 'video')?.phase).toBe('ready');
+    cache.dispose();
+  });
+
+  it('marks no-audio video without fabricating a waveform and keeps silent audio near zero', async () => {
+    const cache = new TimelineMediaPreviewCache();
+    const file = new File(['video'], 'silent.mp4', { type: 'video/mp4' });
+    const withoutAudio: Asset = { id: 'video-no-audio', name: 'mute-track.mp4', type: 'video', mimeType: 'video/mp4', durationMs: 200 };
+    Object.assign(waveformMock, { videoHasAudio: false, videoSplitCalls: 0 });
+    cache.noteWaveformAssetImported(withoutAudio, performance.now());
+    await expect(cache.ensureVideoWaveform(withoutAudio, file)).resolves.toBeUndefined();
+    expect(cache.getWaveformStatus(withoutAudio.id, 'video')?.phase).toBe('no-audio');
+    expect(cache.getVideoWaveform(withoutAudio.id)).toBeUndefined();
+    expect(waveformMock.videoSplitCalls).toBe(0);
+
+    const silentAudio: Asset = { ...withoutAudio, id: 'video-silent', name: 'silent-audio.mp4' };
+    Object.assign(waveformMock, { videoHasAudio: true, videoFail: false, videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0])], [new Float32Array([0])]] });
+    cache.noteWaveformAssetImported(silentAudio, performance.now());
+    await expect(cache.ensureVideoWaveform(silentAudio, file)).resolves.toMatchObject({ peaks: [0, 0] });
+    cache.dispose();
+  });
+
+  it('retries failed video audio analysis without affecting its cached source-window mapping', async () => {
+    const cache = new TimelineMediaPreviewCache();
+    const asset: Asset = { id: 'video-retry', name: 'retry.mp4', type: 'video', mimeType: 'video/mp4', durationMs: 200 };
+    const file = new File(['video'], 'retry.mp4', { type: 'video/mp4' });
+    Object.assign(waveformMock, { videoHasAudio: true, videoFail: true, videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0.2])], [new Float32Array([0.8])]] });
+    cache.noteWaveformAssetImported(asset, performance.now());
+    await expect(cache.ensureVideoWaveform(asset, file)).rejects.toThrow('mock video audio decode failed');
+    expect(cache.getWaveformStatus(asset.id, 'video')?.phase).toBe('failed');
+    waveformMock.videoFail = false;
+    await expect(cache.retryVideoWaveform(asset, file)).resolves.toMatchObject({ peaks: [expect.closeTo(0.2), expect.closeTo(0.8)] });
+    expect(cache.getWaveformStatus(asset.id, 'video')?.phase).toBe('ready');
+    cache.dispose();
+  });
+
+  it('accumulates continuous PCM chunks without retaining a full decoded audio buffer', () => {
+    const accumulator = new StreamingWaveformPeakAccumulator(400_000, 10, 4);
+    accumulator.push([new Float32Array([0.1, 0.2])]);
+    accumulator.push([new Float32Array([0.8, 0])]);
+    expect(accumulator.finish()).toEqual([expect.closeTo(0.1), expect.closeTo(0.2), expect.closeTo(0.8), 0]);
+  });
+
   it('samples only the source range selected after audio trimming', () => {
     const data = { durationMs: 1000, peaks: [0.1, 0.2, 0.3, 0.4, 0.5] };
     expect(sampleWaveformRange(data, 400, 400, 2)).toEqual([0.3, 0.4]);
     expect(sampleWaveformRange(data, 0, 400, 2)).toEqual([0.1, 0.2]);
+  });
+
+  it('keeps cached video source peaks correct across split, cross-track move, mute, and speed', () => {
+    const data = { durationMs: 8000, peaks: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] };
+    // The left half is muted on V1; mute must affect playback only, never the source waveform.
+    const left = { ...clip(2000, 2000), type: 'video' as const, trackId: 'video-1', muted: true };
+    // The right half was moved to V2 and plays 2×, so 1000 ms of timeline covers 2000 ms of source.
+    const right = { ...clip(4000, 1000), type: 'video' as const, trackId: 'video-2', playbackRate: 2, sourceDurationMs: 2000 };
+    expect(sampleWaveformRange(data, left.sourceStartMs, left.durationMs, 2)).toEqual([0.3, 0.4]);
+    expect(sampleWaveformRange(data, right.sourceStartMs, right.sourceDurationMs ?? right.durationMs, 2)).toEqual([0.5, 0.6]);
   });
 
   it('uses cached source thumbnails nearest to a trimmed video interval', () => {

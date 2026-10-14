@@ -1,10 +1,12 @@
-export type WaveformAnalysisPhase = 'queued' | 'decoding' | 'sampling' | 'ready' | 'failed';
+export type WaveformAnalysisPhase = 'queued' | 'decoding' | 'sampling' | 'ready' | 'failed' | 'no-audio';
 
 export interface WaveformTiming {
   importToTaskMs?: number;
   queueWaitMs?: number;
   clipCreateMs?: number;
   readyMs?: number;
+  trackSplitMs?: number;
+  audioTickMs?: number;
   pcmReadMs?: number;
   peakBuildMs?: number;
   cacheWriteMs?: number;
@@ -23,7 +25,7 @@ export interface WaveformDiagnosticEntry {
   at: number;
   assetId: string;
   assetName: string;
-  assetType: 'audio';
+  assetType: 'audio' | 'video';
   durationMs: number;
   attempt: number;
   phase: string;
@@ -93,4 +95,37 @@ export function peakForBucket(channels: Float32Array[], frameCount: number, buck
     for (let index = start; index < Math.min(end, channel.length); index += 1) peak = Math.max(peak, Math.abs(channel[index] ?? 0));
   }
   return Math.min(1, peak);
+}
+
+/**
+ * Builds the same compact peak envelope without retaining a complete video audio track.
+ * MP4Clip exposes original audio as consecutive tick() PCM chunks rather than AudioClip's
+ * full getPCMData() buffer, so binning happens as each chunk arrives.
+ */
+export class StreamingWaveformPeakAccumulator {
+  private readonly peaks: number[];
+  private processedFrames = 0;
+
+  constructor(durationUs: number, sampleRate: number, bucketCount = 1200) {
+    const totalFrames = Math.max(1, Math.ceil(durationUs / 1_000_000 * sampleRate));
+    this.totalFrames = totalFrames;
+    this.bucketCount = Math.max(1, Math.min(bucketCount, totalFrames));
+    this.peaks = Array.from({ length: this.bucketCount }, () => 0);
+  }
+
+  private readonly totalFrames: number;
+  private readonly bucketCount: number;
+
+  push(channels: Float32Array[]) {
+    const frameCount = Math.max(0, ...channels.map((channel) => channel.length));
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const bucket = Math.min(this.bucketCount - 1, Math.floor((this.processedFrames + frame) / this.totalFrames * this.bucketCount));
+      let peak = this.peaks[bucket] ?? 0;
+      for (const channel of channels) peak = Math.max(peak, Math.abs(channel[frame] ?? 0));
+      this.peaks[bucket] = Math.min(1, peak);
+    }
+    this.processedFrames += frameCount;
+  }
+
+  finish() { return [...this.peaks]; }
 }
