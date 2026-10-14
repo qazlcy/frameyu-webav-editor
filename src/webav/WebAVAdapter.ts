@@ -1,7 +1,7 @@
 import { AVCanvas } from '@webav/av-canvas';
 import { AudioClip, Combinator, ImgClip, MP4Clip, renderTxt2ImgBitmap, VisibleSprite } from '@webav/av-cliper';
 import { defaultVideoLayout, getProjectDuration, getVideoLayerZIndex } from '../editor/commands';
-import { msToUs, usToMs } from '../editor/timelineMath';
+import { getClipPlaybackRate, getClipSourceDurationMs, msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, CaptionPosition, Project, TimelineClip } from '../editor/types';
 
 export interface RuntimeAsset {
@@ -163,7 +163,7 @@ export class WebAVAdapter {
   }
 
   private async syncVideoSprite(clip: TimelineClip, project: Project) {
-    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
     const current = this.sprites.get(clip.id);
     if (current?.mediaSignature === mediaSignature) {
       this.applyVideoSprite(current.sprite, clip, project);
@@ -184,7 +184,7 @@ export class WebAVAdapter {
     sprite.opacity = layout.opacity;
     // Track order is bottom-to-top: a later video track gets the higher zIndex and covers earlier tracks.
     sprite.zIndex = getVideoLayerZIndex(project, clip.trackId);
-    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs), playbackRate: getClipPlaybackRate(clip) };
   }
 
   private async createVideoSprite(clip: TimelineClip, project: Project) {
@@ -199,9 +199,10 @@ export class WebAVAdapter {
       discarded.destroy();
       media = remainder;
     }
-    if (clip.durationMs < usToMs(media.meta.duration)) {
+    const sourceDurationMs = getClipSourceDurationMs(clip);
+    if (sourceDurationMs < usToMs(media.meta.duration)) {
       const source = media;
-      const [selected, discarded] = await source.split(msToUs(clip.durationMs));
+      const [selected, discarded] = await source.split(msToUs(sourceDurationMs));
       source.destroy();
       discarded.destroy();
       media = selected;
@@ -213,10 +214,10 @@ export class WebAVAdapter {
   }
 
   private async syncAudioSprite(clip: TimelineClip) {
-    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
     const current = this.sprites.get(clip.id);
     if (current?.mediaSignature === mediaSignature) {
-      current.sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+      current.sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs), playbackRate: getClipPlaybackRate(clip) };
       return;
     }
     this.removeSprite(clip.id);
@@ -231,15 +232,16 @@ export class WebAVAdapter {
       discarded.destroy();
       audio = remainder;
     }
-    if (clip.durationMs < usToMs(audio.meta.duration)) {
+    const sourceDurationMs = getClipSourceDurationMs(clip);
+    if (sourceDurationMs < usToMs(audio.meta.duration)) {
       const source = audio;
-      const [selected, discarded] = await source.split(msToUs(clip.durationMs));
+      const [selected, discarded] = await source.split(msToUs(sourceDurationMs));
       source.destroy();
       discarded.destroy();
       audio = selected;
     }
     const sprite = new VisibleSprite(audio);
-    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs), playbackRate: getClipPlaybackRate(clip) };
     sprite.interactable = 'disabled';
     await this.addSprite(clip.id, sprite, mediaSignature);
   }

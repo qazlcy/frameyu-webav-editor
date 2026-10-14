@@ -1,5 +1,5 @@
 import { AudioClip, MP4Clip } from '@webav/av-cliper';
-import { msToUs, usToMs } from '../editor/timelineMath';
+import { getClipSourceDurationMs, msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, TimelineClip } from '../editor/types';
 
 export interface WaveformData {
@@ -52,7 +52,7 @@ export function sampleThumbnailsForClip(data: VideoThumbnailData, clip: Timeline
   if (!data.frames.length || clip.durationMs <= 0) return [];
   const requested = Math.max(1, count);
   return Array.from({ length: requested }, (_, index) => {
-    const sourceDurationMs = clip.durationMs * (clip.playbackRate && clip.playbackRate > 0 ? clip.playbackRate : 1);
+    const sourceDurationMs = getClipSourceDurationMs(clip);
     const timeMs = clip.sourceStartMs + (index + 0.5) / requested * sourceDurationMs;
     return data.frames.reduce((closest, frame) => Math.abs(frame.timeMs - timeMs) < Math.abs(closest.timeMs - timeMs) ? frame : closest, data.frames[0]);
   });

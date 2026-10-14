@@ -30,4 +30,10 @@ describe('timeline media preview calculations', () => {
     const frames = sampleThumbnailsForClip(data, { ...clip(2000, 2000), type: 'video', trackId: 'video', playbackRate: 2 }, 2);
     expect(frames.map((frame) => frame.timeMs)).toEqual([2000, 4000]);
   });
+
+  it('prefers an explicit source duration after a rate-aware split or trim', () => {
+    const data: VideoThumbnailData = { durationMs: 10_000, frames: [0, 2000, 4000, 6000, 8000].map((timeMs) => ({ timeMs, url: String(timeMs) })) };
+    const frames = sampleThumbnailsForClip(data, { ...clip(4000, 3000), type: 'video', trackId: 'video', playbackRate: 2, sourceDurationMs: 6000 }, 2);
+    expect(frames.map((frame) => frame.timeMs)).toEqual([6000, 8000]);
+  });
 });

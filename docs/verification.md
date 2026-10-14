@@ -192,3 +192,28 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 6. 添加字幕，修改文字、颜色、字号、位置和起止时间，确认画布显示和时间轴一致。
 7. 导出 `frameyu-demo.mp4`，在新标签页或本地播放器复播；确认视频、原声、背景音乐、音效、字幕、时间位置和总时长均正确。
 8. 如任一步失败，记录浏览器版本、输入文件、控制台 `[WebAV]` 日志和可复现步骤；不要将步骤标记为通过。
+
+## Phase 5.5：音视频片段倍速与 Phase 5 回归
+
+分支：`phase5-playback-rate`，基线：`c4fdf1b`。本阶段只新增片段倍速及其必要的时间映射修正；没有接入速度曲线、倒放、变速不变调、ASR、AI 或工程持久化。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| WebAV 1.2.8 实现核查 | 已验证（本地安装源码） | `av-cliper/dist/av-cliper.js` 的 `VisibleSprite`/`OffscreenSprite` 均以 `tick(time * sprite.time.playbackRate)` 取得视频与音频；非 1× 音频经内部线性插值重采样。`Combinator.addSprite` 调用 `clone()`，而 `copyStateTo` 复制 `time`，所以预览和 MP4 合成保留相同倍率。源码注释明确要求调用方自行修正 `time.duration`，并说明音调会变化。 |
+| 数据模型与旧工程兼容 | 通过（纯逻辑测试） | `TimelineClip` 增加可选 `sourceDurationMs`：`durationMs` 始终是工程时间，`sourceStartMs + sourceDurationMs` 是实际源区间。旧工程没有该字段时按 `durationMs × playbackRate` 推导，倍率缺失仍视为 1×。 |
+| 命令与时间映射 | 通过（纯逻辑测试） | `setClipPlaybackRate` 只接受 0.5、0.75、1、1.25、1.5、2，保留源时长而以 `sourceDuration / rate` 重算工程时长。分割、左右裁剪、移动、波形和缩略图均依据源/工程的倍率映射；同视频轨变速造成重叠会拒绝，不移动其他片段。 |
+| WebAV 实际接入 | 已实现 / 待真实媒体验收 | 适配器先按 `sourceStartMs` 与 `sourceDurationMs` 对 `MP4Clip`/`AudioClip` 执行真实 `split` 裁剪，再把工程 `durationMs` 与 `playbackRate` 写入同一个 `VisibleSprite.time`。视频画面和其 MP4Clip 原声共享 Sprite，因此速度、静音、音量与图层布局一致；独立音频同样走实际 Sprite 倍速路径。 |
+| UI 与时间轴 | 已实现 / 工作台结构待浏览器验收 | 视频、背景音乐、音效属性面板均提供六档速度选择；片段宽度、工程时长、缩略图和波形随工程时长/源区间更新。字幕没有速度控件，其时间不会被倍率命令修改。 |
+| 自动检查 | 通过 | `npm run typecheck`、Vitest 44/44、`npm run build` 通过；`npm run test:e2e:local-libs` 为 3 passed / 1 skipped。跳过的是要求完整 WebCodecs 的真实媒体合成测试。 |
+
+### Phase 5 统一回归矩阵
+
+| 功能 | 自动回归 | 真实媒体状态 |
+| --- | --- | --- |
+| 5.1 固定素材入口、分类与可调布局 | Playwright 工作台通过 | 本地 Chrome 待检查导入与音频试听 |
+| 5.2 多视频轨、画中画、混音与字幕层 | 命令/构建通过 | 本地 Chrome 待检查叠加、原声混音与 MP4 |
+| 5.3 PCM 波形与视频缩略图缓存 | 源窗口单测通过 | 本地 Chrome 待检查真实 PCM/缩略图渲染 |
+| 5.4 视频/音频分割 | 分割、裁剪、移动、删除单测通过 | 本地 Chrome 待检查分割后音画连续与 MP4 |
+| 5.5 倍速及其组合 | 倍率、分割、裁剪、重叠、叠加、缓存、字幕稳定性单测通过 | 本地 Chrome 待检查实际画面/原声、混音和 MP4 |
+
+未验证：远程无头 Chromium 仍不提供 `VideoDecoder`、`VideoEncoder`、`AudioDecoder`、`AudioEncoder`，因此不能把源码核查、命令测试或工作台 E2E 视为真实变速媒体通过。请在本地 Chrome/Edge 按 README 第 19、20 项验收：特别记录输入素材、速度档位、分割/裁剪位置、输出 MP4 时长、画面与原声同步，以及音调随速度变化的预期现象。

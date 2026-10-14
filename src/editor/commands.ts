@@ -1,13 +1,13 @@
 import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoLayoutMode } from './types';
-import { MIN_DURATION_MS, clamp, moveClip, snapMs, trimLeft, trimRight } from './timelineMath';
+import { MIN_DURATION_MS, clamp, getClipPlaybackRate, getClipSourceDurationMs, moveClip, snapMs, sourceOffsetForTimelineOffset, timelineDurationForSourceDuration, trimLeft, trimRight } from './timelineMath';
 
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 export const getAsset = (project: Project, assetId: string) => project.assets.find((asset) => asset.id === assetId);
 export const getTrack = (project: Project, trackId: string) => project.tracks.find((track) => track.id === trackId);
 export const getVideoClips = (project: Project) => project.clips.filter((clip) => clip.type === 'video');
 export const getProjectDuration = (project: Project) => getVideoClips(project).reduce((end, clip) => Math.max(end, clip.startMs + clip.durationMs), 0);
-export const getClipPlaybackRate = (clip: TimelineClip) => clip.playbackRate && clip.playbackRate > 0 ? clip.playbackRate : 1;
-export const sourceOffsetForTimelineOffset = (clip: TimelineClip, timelineOffsetMs: number) => Math.round(timelineOffsetMs * getClipPlaybackRate(clip));
+export { getClipPlaybackRate, getClipSourceDurationMs, sourceOffsetForTimelineOffset } from './timelineMath';
+export const PLAYBACK_RATE_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
 function withTrackClipIds(tracks: Track[], clips: TimelineClip[]) {
   return tracks.map((track) => ({ ...track, clipIds: clips.filter((clip) => clip.trackId === track.id).map((clip) => clip.id) }));
@@ -30,8 +30,11 @@ function normaliseToVideoDuration(project: Project, clips: TimelineClip[]): Time
     if (clip.startMs >= videoDuration) return [];
     const assetDuration = clip.assetId ? getAsset(project, clip.assetId)?.durationMs : undefined;
     const sourceRemaining = assetDuration === undefined ? Number.POSITIVE_INFINITY : assetDuration - clip.sourceStartMs;
-    const durationMs = Math.min(clip.durationMs, videoDuration - clip.startMs, sourceRemaining / getClipPlaybackRate(clip));
-    return durationMs >= MIN_DURATION_MS ? [{ ...clip, durationMs }] : [];
+    const durationMs = Math.min(clip.durationMs, videoDuration - clip.startMs, Math.floor(sourceRemaining / getClipPlaybackRate(clip)));
+    if (durationMs < MIN_DURATION_MS) return [];
+    return clip.type === 'caption'
+      ? [{ ...clip, durationMs }]
+      : [{ ...clip, durationMs, sourceDurationMs: Math.min(getClipSourceDurationMs(clip), Math.round(durationMs * getClipPlaybackRate(clip))) }];
   });
 }
 
@@ -70,7 +73,7 @@ export function appendVideoClip(project: Project, asset: Asset, trackId = projec
   if (videoTrack?.type !== 'video') return project;
   const clip: TimelineClip = {
     id: id('video'), trackId: videoTrack.id, type: 'video', assetId: asset.id, name: asset.name,
-    startMs: videoTrackEnd(project, videoTrack.id), sourceStartMs: 0, durationMs: asset.durationMs, playbackRate: 1, volume: 1,
+    startMs: videoTrackEnd(project, videoTrack.id), sourceStartMs: 0, sourceDurationMs: asset.durationMs, durationMs: asset.durationMs, playbackRate: 1, volume: 1,
     videoLayout: defaultVideoLayout(project, asset),
   };
   return withClips(project, [...project.clips, clip]);
@@ -83,7 +86,7 @@ export function addAudioClip(project: Project, asset: Asset, trackId: string): P
   if (!projectDuration) return project;
   const clip: TimelineClip = {
     id: id('audio'), trackId, type: 'audio', assetId: asset.id, name: asset.name,
-    startMs: 0, sourceStartMs: 0, durationMs: Math.min(asset.durationMs, projectDuration), playbackRate: 1, volume: 1,
+    startMs: 0, sourceStartMs: 0, sourceDurationMs: Math.min(asset.durationMs, projectDuration), durationMs: Math.min(asset.durationMs, projectDuration), playbackRate: 1, volume: 1,
   };
   return withClips(project, [...project.clips, clip]);
 }
@@ -107,6 +110,24 @@ export function updateClip(project: Project, clipId: string, patch: Partial<Time
   return withClips(project, project.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip));
 }
 
+export function canSetClipPlaybackRate(project: Project, clipId: string, playbackRate: number): boolean {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || clip.type === 'caption' || !PLAYBACK_RATE_PRESETS.includes(playbackRate as (typeof PLAYBACK_RATE_PRESETS)[number])) return false;
+  const sourceDurationMs = getClipSourceDurationMs(clip);
+  const durationMs = timelineDurationForSourceDuration(sourceDurationMs, playbackRate);
+  if (durationMs < MIN_DURATION_MS) return false;
+  const candidate = { ...clip, playbackRate, sourceDurationMs, durationMs };
+  return candidate.type !== 'video' || !videoOverlaps(project, candidate);
+}
+
+/** Preserves the exact source interval and recomputes only its project-time duration. */
+export function setClipPlaybackRate(project: Project, clipId: string, playbackRate: number): Project {
+  if (!canSetClipPlaybackRate(project, clipId, playbackRate)) return project;
+  return withClips(project, project.clips.map((clip) => clip.id === clipId
+    ? { ...clip, playbackRate, sourceDurationMs: getClipSourceDurationMs(clip), durationMs: timelineDurationForSourceDuration(getClipSourceDurationMs(clip), playbackRate) }
+    : clip));
+}
+
 export function removeClip(project: Project, clipId: string): Project {
   return withClips(project, project.clips.filter((clip) => clip.id !== clipId));
 }
@@ -127,13 +148,15 @@ export function splitTimelineClip(project: Project, clipId: string, splitTimeMs:
   const splitAtMs = Math.round(splitTimeMs);
   const leftDurationMs = splitAtMs - clip.startMs;
   const sourceOffsetMs = sourceOffsetForTimelineOffset(clip, leftDurationMs);
-  const left: TimelineClip = { ...clip, id: id(clip.type), durationMs: leftDurationMs };
+  const sourceDurationMs = getClipSourceDurationMs(clip);
+  const left: TimelineClip = { ...clip, id: id(clip.type), durationMs: leftDurationMs, sourceDurationMs: sourceOffsetMs };
   const right: TimelineClip = {
     ...clip,
     id: id(clip.type),
     startMs: splitAtMs,
     sourceStartMs: clip.sourceStartMs + sourceOffsetMs,
     durationMs: clip.durationMs - leftDurationMs,
+    sourceDurationMs: sourceDurationMs - sourceOffsetMs,
   };
   return withClips(project, project.clips.flatMap((item) => item.id === clipId ? [left, right] : [item]));
 }
@@ -213,12 +236,8 @@ export function trimProjectClip(project: Project, clipId: string, valueMs: numbe
     return updateClip(project, clipId, updated);
   }
   const candidate = edge === 'left'
-    ? (() => {
-      const startMs = clamp(snapMs(valueMs), 0, clip.startMs + clip.durationMs - MIN_DURATION_MS);
-      const consumed = startMs - clip.startMs;
-      return { ...clip, startMs, sourceStartMs: clip.sourceStartMs + consumed, durationMs: clip.durationMs - consumed };
-    })()
-    : { ...clip, durationMs: clamp(snapMs(valueMs), MIN_DURATION_MS, assetDuration - clip.sourceStartMs) };
+    ? trimLeft(clip, valueMs, assetDuration, getProjectDuration(project))
+    : trimRight(clip, valueMs, assetDuration, getProjectDuration(project));
   return videoOverlaps(project, candidate) ? project : withClips(project, project.clips.map((item) => item.id === clipId ? candidate : item));
 }
 

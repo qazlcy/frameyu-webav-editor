@@ -55,8 +55,10 @@ export interface TimelineClip {
   name: string;
   startMs: number;
   sourceStartMs: number;
+  /** Source-media interval length. Undefined means legacy `durationMs × playbackRate`. */
+  sourceDurationMs?: number;
   durationMs: number;
-  /** Project-time duration; source-time offsets are multiplied by this rate. Defaults to 1 for older projects. */
+  /** Playback rate. `durationMs` is project time; source time is tracked separately. Defaults to 1 for older projects. */
   playbackRate?: number;
   volume: number;
   muted?: boolean;
