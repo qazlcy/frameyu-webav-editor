@@ -1,4 +1,4 @@
-import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type Project, type TimelineClip, type Track, type TrackType } from './types';
+import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType } from './types';
 import { MIN_DURATION_MS, clamp, moveClip, snapMs, trimLeft, trimRight } from './timelineMath';
 
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
@@ -68,14 +68,16 @@ export function addAudioClip(project: Project, asset: Asset, trackId: string): P
   return withClips(project, [...project.clips, clip]);
 }
 
-export function addCaption(project: Project, trackId = project.tracks.find((track) => track.type === 'caption')?.id): Project {
+export function addCaption(project: Project, trackId = project.tracks.find((track) => track.type === 'caption')?.id, draft?: CaptionDraft): Project {
   const projectDuration = getProjectDuration(project);
-  const durationMs = Math.min(3000, projectDuration);
+  const startMs = clamp(snapMs(draft?.startMs ?? 0), 0, projectDuration);
+  const endMs = clamp(snapMs(draft?.endMs ?? Math.min(3000, projectDuration)), startMs + MIN_DURATION_MS, projectDuration);
+  const durationMs = endMs - startMs;
   const track = trackId ? getTrack(project, trackId) : undefined;
   if (durationMs < MIN_DURATION_MS || track?.type !== 'caption') return project;
   const clip: TimelineClip = {
-    id: id('caption'), trackId: track.id, type: 'caption', name: '新字幕', startMs: 0,
-    sourceStartMs: 0, durationMs, volume: 1, text: '在这里输入字幕',
+    id: id('caption'), trackId: track.id, type: 'caption', name: draft?.text.trim().slice(0, 18) || '新字幕', startMs,
+    sourceStartMs: 0, durationMs, volume: 1, text: draft?.text.trim() || '在这里输入字幕',
     captionStyle: { fontSize: 46, color: '#ffffff', position: 'bottom' },
   };
   return withClips(project, [...project.clips, clip]);

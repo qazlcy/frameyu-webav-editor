@@ -75,6 +75,15 @@ describe('multi-video project commands', () => {
     expect(project.clips.filter((clip) => clip.type === 'audio' || clip.type === 'caption')).toHaveLength(2);
   });
 
+  it('creates a manual caption from explicit text and timeline bounds', () => {
+    let project = addAsset(emptyProject(), video('a', 6000));
+    project = appendVideoClip(project, project.assets[0]);
+    project = addCaption(project, 'caption', { text: '手动字幕', startMs: 1200, endMs: 3600 });
+    expect(project.clips.find((clip) => clip.type === 'caption')).toMatchObject({
+      trackId: 'caption', text: '手动字幕', name: '手动字幕', startMs: 1200, durationMs: 2400,
+    });
+  });
+
   it('deletes one video clip without releasing the shared source or another clip', () => {
     let project = addAsset(emptyProject(), video('a', 4000));
     project = appendVideoClip(project, project.assets[0]);

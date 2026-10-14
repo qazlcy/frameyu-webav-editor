@@ -120,6 +120,22 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 
 未验证：拖动后真实 WebAV 预览和导出的裁剪内容、原声音画同步，以及两个源视频的成片拼接仍需在具备完整 WebCodecs 的 Chrome/Edge 按 README 清单复核；不得以远程无头结果替代该验收。
 
+## Phase 5.1：素材面板与工作台 UI 重构
+
+分支：`phase5-material-panel`，基线：`36a5183`。本阶段仅调整素材管理界面与对应的可序列化素材分类，不改变 `WebAVAdapter` 的媒体创建、预览或导出调用链。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 固定入口与独立滚动 | 通过（UI E2E） | 左侧面板拆为固定 `material-actions` 与可纵向滚动的 `material-list`。五个入口、筛选器和字幕创建表单不会随素材列表滚动；左栏尺寸调整仍由已有 CSS Grid 分隔条管理。 |
+| 五类入口 | 通过 | 视频、音乐、音效入口分别选择本地 MP4、MP3/WAV；字幕入口创建手动字幕；“从素材库导入”只聚焦当前会话的同一素材列表。未接入的 AI 生成/ASR 显示“待接入”，不发起不存在的请求或伪造结果。 |
+| 素材分类与卡片 | 通过（状态/UI） | 新增可选 `Asset.audioKind: 'music' | 'sfx'`，旧音频素材未设置时按音乐显示。视频、音乐、音效和字幕分别使用蓝、青绿、琥珀、紫色卡片；字幕卡片由真实 caption 片段派生，删除时间轴片段不会删除源音视频 Asset。 |
+| 本地试听与资源释放 | 已实现 / 待浏览器试听 | 音频导入时创建本地 Object URL 供原生 `<audio>` 控件试听；组件卸载时统一 revoke，未进入 Project 或 WebAV 运行时状态。 |
+| 手动字幕时间 | 通过（单测） | `addCaption` 支持 `CaptionDraft` 的文本、起止毫秒；命令会 100 ms 吸附并约束在视频工程时长内。 |
+| WebAV 1.2.8 API 审查 | 已验证（声明文件） | 读取 `dist/av-cliper.d.ts`：`AudioClip.getPCMData()`、`MP4Clip.thumbnails()`、`MP4Clip.split()`、`VisibleSprite.rect/zIndex/opacity/time` 均存在。本期不调用波形、缩略图、画中画或倍速接口，这些留给 5.2～5.5。 |
+| 自动检查 | 通过 | `npm run typecheck`、Vitest 24/24、`npm run build` 通过；Playwright 工作台 2 项通过，真实媒体导出 1 项因无头 Chromium 无完整 WebCodecs 而 skipped。 |
+
+未验证：远程无头 Chromium 不能完成 MP4/音频 WebCodecs 解码编码，因此本地音频试听、手动字幕实际画面，以及添加后的真实预览/MP4 导出均须在 Chrome/Edge 执行 README 第 5、6、12 项；它们不能因结构 E2E 通过而标为已验证。
+
 ## 第二阶段：本地 Chrome 验收清单
 
 1. 通过端口转发打开 `http://localhost:5173`，确认没有 WebCodecs 兼容性警告。

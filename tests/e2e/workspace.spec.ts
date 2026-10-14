@@ -58,3 +58,33 @@ test('resizes the workspace and keeps a vertically scrollable dynamic track list
   });
   expect(alignment.labelTop).toBe(alignment.laneTop);
 });
+
+test('keeps five material entry points and filters fixed above the independently scrolling material list', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const panel = page.locator('.asset-panel');
+  const actions = page.locator('.material-actions');
+  const list = page.locator('.material-list');
+  await expect(panel).toBeVisible();
+  await expect(page.getByRole('button', { name: /导入\/生成视频/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /导入\/生成音乐/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /导入\/生成音效/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /导入\/生成字幕/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /从素材库导入/ })).toBeVisible();
+  expect(await actions.evaluate((node) => getComputedStyle(node).flexShrink)).toBe('0');
+  expect(await list.evaluate((node) => getComputedStyle(node).overflowY)).toBe('auto');
+
+  await page.getByRole('button', { name: /导入\/生成字幕/ }).click();
+  await expect(page.getByLabel('新字幕文字')).toBeVisible();
+  await page.getByRole('tab', { name: '视频' }).click();
+  await expect(page.getByRole('tab', { name: '视频' })).toHaveAttribute('aria-selected', 'true');
+
+  const divider = page.getByRole('separator', { name: '调整素材库宽度' });
+  const box = await divider.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + 3, box!.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + 63, box!.y + 100);
+  await page.mouse.up();
+  expect(await panel.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(290);
+});

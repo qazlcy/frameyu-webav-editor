@@ -1,4 +1,5 @@
 export type AssetType = 'video' | 'audio';
+export type AudioKind = 'music' | 'sfx';
 export type TrackType = 'caption' | 'video' | 'music' | 'sfx';
 export type CaptionPosition = 'bottom' | 'center' | 'top';
 export const DEFAULT_TRACK_HEIGHT_PX = 42;
@@ -13,6 +14,8 @@ export interface Asset {
   durationMs: number;
   width?: number;
   height?: number;
+  /** Audio assets are deliberately classified at import time; older projects treat an unset value as music. */
+  audioKind?: AudioKind;
 }
 
 export interface Track {
@@ -43,6 +46,12 @@ export interface TimelineClip {
   volume: number;
   text?: string;
   captionStyle?: CaptionStyle;
+}
+
+export interface CaptionDraft {
+  text: string;
+  startMs: number;
+  endMs: number;
 }
 
 export interface Project {

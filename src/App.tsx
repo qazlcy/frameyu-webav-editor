@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, trimProjectClip, updateClip } from './editor/commands';
-import { emptyProject, type Asset, type EditorState, type Project, type TimelineClip, type Track, type TrackType } from './editor/types';
+import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type EditorState, type Project, type TimelineClip, type Track, type TrackType } from './editor/types';
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
@@ -11,6 +11,7 @@ const makeId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 const LAYOUT_STORAGE_KEY = 'frameyu-workspace-layout-v1';
 type LayoutState = WorkspaceLayout;
+type MaterialFilter = 'all' | 'video' | 'music' | 'sfx' | 'caption';
 type LayoutDrag = { kind: 'asset' | 'property' | 'timeline'; pointerId: number; startClient: number; startValue: number };
 
 type DragState =
@@ -34,6 +35,11 @@ export default function App() {
   const editorBodyRef = useRef<HTMLDivElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const rulerScrollRef = useRef<HTMLDivElement>(null);
+  const materialListRef = useRef<HTMLDivElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const musicInputRef = useRef<HTMLInputElement>(null);
+  const sfxInputRef = useRef<HTMLInputElement>(null);
+  const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const adapterRef = useRef<WebAVAdapter>();
   const durationRef = useRef(0);
   const projectRef = useRef<Project>(emptyProject());
@@ -49,6 +55,9 @@ export default function App() {
   const [selectedTrackId, setSelectedTrackId] = useState('video');
   const [pendingTrackFocusId, setPendingTrackFocusId] = useState<string>();
   const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
+  const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all');
+  const [captionDraft, setCaptionDraft] = useState<CaptionDraft>({ text: '', startMs: 0, endMs: 3000 });
+  const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
 
   projectRef.current = project;
   const projectDuration = getProjectDuration(project);
@@ -57,6 +66,11 @@ export default function App() {
   const selectedAsset = selected?.assetId ? getAsset(project, selected.assetId) : undefined;
   const timelineDuration = Math.max(projectDuration, 10000);
   const tracks = useMemo(() => sortedTracks(project.tracks), [project.tracks]);
+  const visibleMaterials = useMemo(() => {
+    const assets = project.assets.filter((asset) => materialFilter === 'all' || materialFilter === 'video' && asset.type === 'video' || materialFilter === 'music' && asset.type === 'audio' && (asset.audioKind ?? 'music') === 'music' || materialFilter === 'sfx' && asset.type === 'audio' && asset.audioKind === 'sfx');
+    const captions = project.clips.filter((clip) => clip.type === 'caption' && (materialFilter === 'all' || materialFilter === 'caption'));
+    return { assets, captions };
+  }, [materialFilter, project.assets, project.clips]);
   const contentWidth = timelineContentWidth(timelineDuration, editor.zoom);
   const mediaSignature = useMemo(() => JSON.stringify({
     width: project.width,
@@ -83,7 +97,11 @@ export default function App() {
       setCapability(report);
       if (!report.supported) setEditor((previous) => ({ ...previous, status: 'error', message: report.reasons[0] }));
     });
-    return () => adapter.destroy();
+    return () => {
+      adapter.destroy();
+      audioPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      audioPreviewUrlsRef.current.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -145,14 +163,15 @@ export default function App() {
     }
   }
 
-  async function importAudio(file: File) {
+  async function importAudio(file: File, audioKind: AudioKind) {
     setEditor((previous) => ({ ...previous, status: 'loading', message: '正在解析音频…' }));
     try {
       const info = await adapterRef.current!.inspectFile(file, 'audio');
-      const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', mimeType: file.type, ...info };
+      const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, ...info };
       adapterRef.current!.registerAsset(asset, file);
+      audioPreviewUrlsRef.current.set(asset.id, URL.createObjectURL(file));
       setProject((previous) => ({ ...previous, assets: [...previous.assets, asset] }));
-      setEditor((previous) => ({ ...previous, status: 'ready', message: `已导入 ${file.name}` }));
+      setEditor((previous) => ({ ...previous, status: 'ready', message: `已导入${audioKind === 'music' ? '音乐' : '音效'} ${file.name}` }));
     } catch (error) {
       console.error('[WebAV] audio import failed', error);
       setEditor((previous) => ({ ...previous, status: 'error', message: `音频无法解码：${error instanceof Error ? error.message : String(error)}` }));
@@ -210,7 +229,18 @@ export default function App() {
 
   function addCaptionToSelectedTrack() {
     const track = targetTrack('caption');
-    if (track) setProject((previous) => addCaption(previous, track.id));
+    if (!track) return;
+    const safeEndMs = Math.min(Math.max(captionDraft.endMs, captionDraft.startMs + 100), projectDuration);
+    setProject((previous) => addCaption(previous, track.id, { ...captionDraft, endMs: safeEndMs }));
+    setCaptionDraft((previous) => ({ ...previous, startMs: safeEndMs, endMs: Math.min(projectDuration, safeEndMs + 3000) }));
+    setCaptionComposerOpen(false);
+    setEditor((previous) => ({ ...previous, status: 'ready', message: '已创建手动字幕' }));
+  }
+
+  function showMaterialLibrary() {
+    setMaterialFilter('all');
+    setEditor((previous) => ({ ...previous, status: 'ready', message: '请选择下方素材并添加到时间轴' }));
+    requestAnimationFrame(() => materialListRef.current?.scrollTo({ top: 0, behavior: 'smooth' }));
   }
 
   function createTrack(type: Exclude<TrackType, 'video'>) {
@@ -409,12 +439,26 @@ export default function App() {
     <div className="editor-body" ref={editorBodyRef}>
       <section className="workspace" style={workspaceStyle}>
         <aside className="asset-panel panel">
-          <h2>素材库</h2>
-          <label className="import-button">导入视频<input aria-label="导入视频" type="file" accept="video/mp4" onChange={(event) => event.target.files?.[0] && void importVideo(event.target.files[0])} /></label>
-          <div className="asset-list">{project.assets.filter((asset) => asset.type === 'video').map((asset) => <div className="asset-card" key={asset.id}><b title={asset.name}>{asset.name}</b><small>视频 · {formatTime(asset.durationMs)}</small><button onClick={() => { setProject((previous) => appendVideoClip(previous, asset)); setEditor((previous) => ({ ...previous, status: 'ready', message: `${asset.name} 已追加到视频轨` })); }}>+ 视频轨</button></div>)}</div>
-          <label className="import-button subtle">导入音乐 / 音效<input aria-label="导入音频" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => event.target.files?.[0] && void importAudio(event.target.files[0])} /></label>
-          <div className="asset-list">{project.assets.filter((asset) => asset.type === 'audio').map((asset) => <div className="asset-card" key={asset.id}><b title={asset.name}>{asset.name}</b><small>{formatTime(asset.durationMs)}</small><div><button onClick={() => addAudio(asset, 'music')} disabled={!projectDuration}>+ 音乐</button><button onClick={() => addAudio(asset, 'sfx')} disabled={!projectDuration}>+ 音效</button></div></div>)}</div>
-          <button className="caption-add" disabled={!projectDuration} onClick={addCaptionToSelectedTrack}>＋ 添加字幕</button>
+          <div className="material-actions">
+            <div className="material-heading"><h2>素材库</h2><span>本地会话</span></div>
+            <div className="material-entry-grid">
+              <button className="material-entry video-entry" onClick={() => videoInputRef.current?.click()}><i>▣</i><span>导入/生成视频</span><small>本地 MP4 · 生成待接入</small></button>
+              <button className="material-entry music-entry" onClick={() => musicInputRef.current?.click()}><i>♫</i><span>导入/生成音乐</span><small>MP3/WAV · 生成待接入</small></button>
+              <button className="material-entry sfx-entry" onClick={() => sfxInputRef.current?.click()}><i>✦</i><span>导入/生成音效</span><small>MP3/WAV · 生成待接入</small></button>
+              <button className="material-entry caption-entry" onClick={() => setCaptionComposerOpen((open) => !open)}><i>T</i><span>导入/生成字幕</span><small>手动创建 · ASR 待接入</small></button>
+            </div>
+            <button className="material-library-entry" onClick={showMaterialLibrary}><i>⌘</i> 从素材库导入</button>
+            <input ref={videoInputRef} aria-label="导入视频" className="visually-hidden" type="file" accept="video/mp4" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importVideo(file); }} />
+            <input ref={musicInputRef} aria-label="导入音乐" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importAudio(file, 'music'); }} />
+            <input ref={sfxInputRef} aria-label="导入音效" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importAudio(file, 'sfx'); }} />
+            {captionComposerOpen && <div className="caption-composer"><label>字幕文字<textarea aria-label="新字幕文字" value={captionDraft.text} onChange={(event) => setCaptionDraft((previous) => ({ ...previous, text: event.target.value }))} placeholder="输入字幕文本" /></label><div><label>开始 <input aria-label="字幕开始时间" type="number" min="0" max={projectDuration} value={captionDraft.startMs} onChange={(event) => setCaptionDraft((previous) => ({ ...previous, startMs: Number(event.target.value) }))} /></label><label>结束 <input aria-label="字幕结束时间" type="number" min="0" max={projectDuration} value={captionDraft.endMs} onChange={(event) => setCaptionDraft((previous) => ({ ...previous, endMs: Number(event.target.value) }))} /></label></div><button className="caption-add" disabled={!projectDuration} onClick={addCaptionToSelectedTrack}>创建字幕</button></div>}
+            <div className="material-filters" role="tablist" aria-label="素材筛选">{([['all', '全部'], ['video', '视频'], ['music', '音乐'], ['sfx', '音效'], ['caption', '字幕']] as const).map(([filter, label]) => <button key={filter} role="tab" aria-selected={materialFilter === filter} className={materialFilter === filter ? 'active' : ''} onClick={() => setMaterialFilter(filter)}>{label}</button>)}</div>
+          </div>
+          <div className="material-list" ref={materialListRef} aria-label="素材列表">
+            {visibleMaterials.assets.map((asset) => <MaterialAssetCard key={asset.id} asset={asset} previewUrl={audioPreviewUrlsRef.current.get(asset.id)} projectDuration={projectDuration} onAddVideo={() => { setProject((previous) => appendVideoClip(previous, asset)); setEditor((previous) => ({ ...previous, status: 'ready', message: `${asset.name} 已追加到视频轨` })); }} onAddAudio={(kind) => addAudio(asset, kind)} />)}
+            {visibleMaterials.captions.map((clip) => <button className="asset-card caption-material-card" key={clip.id} onClick={() => { setSelectedTrackId(clip.trackId); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }}><span className="asset-icon">T</span><span className="asset-card-body"><b title={clip.text}>{clip.text || '空字幕'}</b><small>字幕 · {formatTime(clip.durationMs)} · 编辑</small></span></button>)}
+            {!visibleMaterials.assets.length && !visibleMaterials.captions.length && <p className="material-empty">暂无该类型素材。使用上方入口导入本地文件或手动创建字幕。</p>}
+          </div>
         </aside>
         <Divider kind="asset" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, assetWidth: DEFAULT_WORKSPACE_LAYOUT.assetWidth }))} />
         <section className="preview-panel panel">
@@ -434,6 +478,18 @@ export default function App() {
       </section>
     </div>
   </main>;
+}
+
+function MaterialAssetCard({ asset, previewUrl, projectDuration, onAddVideo, onAddAudio }: { asset: Asset; previewUrl?: string; projectDuration: number; onAddVideo: () => void; onAddAudio: (kind: AudioKind) => void }) {
+  const audioKind = asset.audioKind ?? 'music';
+  const kindLabel = asset.type === 'video' ? '视频' : audioKind === 'music' ? '音乐' : '音效';
+  const resolution = asset.type === 'video' && asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : '';
+  return <article className={`asset-card ${asset.type === 'video' ? 'video' : audioKind}`}>
+    <span className="asset-icon" aria-hidden="true">{asset.type === 'video' ? '▣' : audioKind === 'music' ? '♫' : '✦'}</span>
+    <div className="asset-card-body"><b title={asset.name}>{asset.name}</b><small>{kindLabel} · {formatTime(asset.durationMs)}{resolution}</small>
+      {asset.type === 'video' ? <button onClick={onAddVideo}>+ 视频轨</button> : <><div className="asset-card-actions"><button onClick={() => onAddAudio(audioKind)}>+ {audioKind === 'music' ? '音乐' : '音效'}</button><button className="secondary" onClick={() => onAddAudio(audioKind === 'music' ? 'sfx' : 'music')}>作为{audioKind === 'music' ? '音效' : '音乐'}</button></div>{previewUrl ? <audio aria-label={`试听 ${asset.name}`} controls preload="metadata" src={previewUrl} /> : <small className="audio-unavailable">本会话未保留试听源</small>}</>}
+    </div>
+  </article>;
 }
 
 function Divider({ kind, onPointerDown, onDoubleClick }: { kind: LayoutDrag['kind']; onPointerDown: (event: React.PointerEvent, kind: LayoutDrag['kind']) => void; onDoubleClick: () => void }) {
