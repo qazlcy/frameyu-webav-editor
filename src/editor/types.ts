@@ -56,6 +56,8 @@ export interface TimelineClip {
   startMs: number;
   sourceStartMs: number;
   durationMs: number;
+  /** Project-time duration; source-time offsets are multiplied by this rate. Defaults to 1 for older projects. */
+  playbackRate?: number;
   volume: number;
   muted?: boolean;
   videoLayout?: VideoLayout;

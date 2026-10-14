@@ -163,7 +163,7 @@ export class WebAVAdapter {
   }
 
   private async syncVideoSprite(clip: TimelineClip, project: Project) {
-    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, volume: clip.volume, muted: clip.muted });
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
     const current = this.sprites.get(clip.id);
     if (current?.mediaSignature === mediaSignature) {
       this.applyVideoSprite(current.sprite, clip, project);
@@ -213,7 +213,7 @@ export class WebAVAdapter {
   }
 
   private async syncAudioSprite(clip: TimelineClip) {
-    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, volume: clip.volume, muted: clip.muted });
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
     const current = this.sprites.get(clip.id);
     if (current?.mediaSignature === mediaSignature) {
       current.sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };

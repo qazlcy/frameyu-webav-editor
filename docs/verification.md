@@ -167,6 +167,21 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 
 未验证：远程 Chromium 缺完整 WebCodecs，无法在容器中确认 PCM 解码、真实帧抽取和时间轴视觉结果。请在本地 Chrome/Edge 按 README 第 7、8 项检查波形幅度、缩略图源区间、裁剪/缩放/拖拽后的对齐，以及不会影响预览和 MP4 导出。
 
+## Phase 5.4：视频与音频片段分割
+
+分支：`phase5-clip-split`，基线：`76c3ab0`。本阶段只新增片段级编辑命令与入口，不变更 WebAV 的合成语义，也不开始 5.5 倍速功能。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 可测试分割命令 | 通过（纯逻辑测试） | `splitTimelineClip(project, clipId, playheadMs)` 只接受视频/音频片段内部位置；以两个新 ID 替换原片段，不移动其他片段。左段保留源起点，右段源起点按 `sourceStartMs + 工程偏移 × playbackRate` 计算；两者的工程时长相加等于原时长。字幕、端点及最小时长保护均拒绝分割。 |
+| 倍速数据语义预留 | 已实现（尚未启用倍速） | `TimelineClip.playbackRate?` 缺省为 `1`，兼容已有工程。`durationMs` 始终表示工程时间；源时间偏移由 `getClipPlaybackRate` / `sourceOffsetForTimelineOffset` 计算。当前 WebAV 适配器尚未实现非 1× 变速，因此该字段没有 UI 写入入口；5.5 必须在验证 WebAV 能力后再接入实际媒体速度。 |
+| 编辑入口 | 已实现 / 工作台结构待浏览器验收 | 工具栏“分割”、右键“在播放头处分割”以及非输入焦点下的 `S` 都走同一命令。片段右键会先选中并暂停；输入框、文本域、选择框、按钮及可编辑元素内的 `S` 不触发。 |
+| WebAV 与资源处理 | 已实现 / 待真实媒体验收 | 分割后旧 TimelineClip ID 对应 Sprite 会在同步时移除，两个新 ID 分别以既有 `MP4Clip.split` / `AudioClip.split` 源裁剪路径创建；视频画面和其同一 MP4Clip 内的原声使用同样的源区间。Asset/File 缓存没有按片段释放，因此同源的其他引用不受影响。 |
+| 波形和缩略图 | 通过（纯逻辑测试） | 缓存继续只按 Asset ID 保存；新片段以各自的 `sourceStartMs`、时长（以及预留的播放倍率）采样，分割不重新解码整个素材，也不会回收仍被引用的缓存。 |
+| 自动检查 | 通过 | `npm run typecheck`、Vitest 37/37、`npm run build` 通过；`npm run test:e2e:local-libs` 为 3 passed / 1 skipped。跳过项是需要完整 WebCodecs 的真实媒体合成测试。 |
+
+未验证：远程无头 Chromium 没有完整 WebCodecs，不能在容器内确认分割后的视频画面、视频原声、独立音频的连续性、PIP 继承效果、波形/缩略图实际渲染及导出 MP4。请在本地 Chrome/Edge 按 README 第 17、18 项操作；仅在确认预览与导出内容连续后，才能将真实媒体分割标为通过。
+
 ## 第二阶段：本地 Chrome 验收清单
 
 1. 通过端口转发打开 `http://localhost:5173`，确认没有 WebCodecs 兼容性警告。

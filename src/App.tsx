@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, defaultVideoLayout, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, setVideoLayoutMode, trimProjectClip, updateClip, updateVideoLayout } from './editor/commands';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, canSplitTimelineClip, defaultVideoLayout, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, setVideoLayoutMode, splitTimelineClip, trimProjectClip, updateClip, updateVideoLayout } from './editor/commands';
 import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type EditorState, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout } from './editor/types';
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
@@ -14,6 +14,7 @@ const LAYOUT_STORAGE_KEY = 'frameyu-workspace-layout-v1';
 type LayoutState = WorkspaceLayout;
 type MaterialFilter = 'all' | 'video' | 'music' | 'sfx' | 'caption';
 type LayoutDrag = { kind: 'asset' | 'property' | 'timeline'; pointerId: number; startClient: number; startValue: number };
+type ClipContextMenu = { clipId: string; x: number; y: number };
 
 type DragState =
   | { kind: 'clip'; pointerId: number; clip: TimelineClip; mode: 'move' | 'left' | 'right'; pointerStartMs: number }
@@ -63,6 +64,7 @@ export default function App() {
   const [captionDraft, setCaptionDraft] = useState<CaptionDraft>({ text: '', startMs: 0, endMs: 3000 });
   const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
   const [timelinePreviewVersion, setTimelinePreviewVersion] = useState(0);
+  const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
 
   projectRef.current = project;
   const projectDuration = getProjectDuration(project);
@@ -83,7 +85,7 @@ export default function App() {
     width: project.width,
     height: project.height,
     videoTracks: project.tracks.filter((track) => track.type === 'video').map(({ id, order }) => ({ id, order })),
-    clips: project.clips.map(({ id, trackId, type, assetId, name, startMs, sourceStartMs, durationMs, volume, muted, videoLayout, text, captionStyle }) => ({ id, trackId, type, assetId, name, startMs, sourceStartMs, durationMs, volume, muted, videoLayout, text, captionStyle })),
+    clips: project.clips.map(({ id, trackId, type, assetId, name, startMs, sourceStartMs, durationMs, playbackRate, volume, muted, videoLayout, text, captionStyle }) => ({ id, trackId, type, assetId, name, startMs, sourceStartMs, durationMs, playbackRate, volume, muted, videoLayout, text, captionStyle })),
   }), [project.width, project.height, project.tracks, project.clips]);
   const mediaProject = useMemo(() => project, [mediaSignature]);
 
@@ -169,6 +171,19 @@ export default function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [pendingTrackFocusId, project.tracks]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 's' || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select, button, [contenteditable="true"]'))) return;
+      if (!selected || !canSplitTimelineClip(projectRef.current, selected.id, editor.playheadMs)) return;
+      event.preventDefault();
+      splitClipAtPlayhead(selected.id);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [editor.playheadMs, project, selected]);
 
   async function importVideo(file: File) {
     setEditor((previous) => ({ ...previous, status: 'loading', message: '正在解析视频…' }));
@@ -304,6 +319,19 @@ export default function App() {
     setProject((previous) => updateClip(previous, selected.id, patch));
   }
 
+  function splitClipAtPlayhead(clipId = selected?.id) {
+    if (!clipId) return;
+    const current = projectRef.current;
+    if (!canSplitTimelineClip(current, clipId, editor.playheadMs)) {
+      setEditor((previous) => ({ ...previous, status: 'error', message: '播放头必须位于视频、音乐或音效片段的内部才能分割。' }));
+      return;
+    }
+    adapterRef.current?.pause();
+    setProject((previous) => splitTimelineClip(previous, clipId, editor.playheadMs));
+    setEditor((previous) => ({ ...previous, selectedClipId: undefined, playback: 'paused', status: 'ready', message: '已在播放头位置分割片段。' }));
+    setClipContextMenu(undefined);
+  }
+
   function updateSelectedVideoLayout(patch: Partial<VideoLayout>) {
     if (!selected || selected.type !== 'video') return;
     setProject((previous) => updateVideoLayout(previous, selected.id, patch));
@@ -342,7 +370,9 @@ export default function App() {
   }
 
   function startClipDrag(event: React.PointerEvent, clip: TimelineClip, mode: Extract<DragState, { kind: 'clip' }>['mode']) {
+    if (event.button !== 0) return;
     event.stopPropagation();
+    setClipContextMenu(undefined);
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     setSelectedTrackId(clip.trackId);
     setEditor((previous) => ({ ...previous, selectedClipId: clip.id, playback: 'paused' }));
@@ -500,7 +530,16 @@ export default function App() {
 
   const workspaceStyle: CSSProperties = { gridTemplateColumns: `${layout.assetWidth}px ${WORKSPACE_DIVIDER_SIZE}px minmax(${MIN_PREVIEW_WIDTH}px, 1fr) ${WORKSPACE_DIVIDER_SIZE}px ${layout.propertyWidth}px` };
 
-  return <main className={`editor-shell ${layoutDrag ? 'is-resizing' : ''}`} onPointerMove={moveInteractions} onPointerUp={endInteractions} onPointerCancel={endInteractions} onLostPointerCapture={() => endInteractions()}>
+  function openClipContextMenu(event: React.MouseEvent, clip: TimelineClip) {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTrackId(clip.trackId);
+    setEditor((previous) => ({ ...previous, selectedClipId: clip.id, playback: 'paused' }));
+    adapterRef.current?.pause();
+    setClipContextMenu({ clipId: clip.id, x: event.clientX, y: event.clientY });
+  }
+
+  return <main className={`editor-shell ${layoutDrag ? 'is-resizing' : ''}`} onPointerDown={() => setClipContextMenu(undefined)} onPointerMove={moveInteractions} onPointerUp={endInteractions} onPointerCancel={endInteractions} onLostPointerCapture={() => endInteractions()}>
     <header className="topbar">
       <div><strong>帧语智能编辑器</strong><span className="tag">WebAV Demo</span></div>
       <div className={`status ${editor.status}`}>{editor.status === 'loading' ? '加载中' : editor.status === 'exporting' ? '导出中' : editor.status === 'error' ? '异常' : '就绪'} · {editor.message}</div>
@@ -541,12 +580,13 @@ export default function App() {
       </section>
       <Divider kind="timeline" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, timelineHeight: DEFAULT_WORKSPACE_LAYOUT.timelineHeight }))} />
       <section className="timeline-panel panel" style={{ height: `${layout.timelineHeight}px` }}>
-        <div className="timeline-toolbar"><b>时间轴</b><div className="timeline-actions"><button onClick={() => createTrack('caption')}>+ 字幕轨</button><button onClick={() => createTrack('video')}>+ 视频轨</button><button onClick={() => createTrack('music')}>+ 音乐轨</button><button onClick={() => createTrack('sfx')}>+ 音效轨</button><label>缩放 <input aria-label="时间轴缩放" type="range" min="45" max="240" value={editor.zoom} onChange={(event) => setEditor((previous) => ({ ...previous, zoom: Number(event.target.value) }))} /></label></div></div>
+        <div className="timeline-toolbar"><b>时间轴</b><div className="timeline-actions"><button aria-label="分割选中片段" disabled={!selected || !canSplitTimelineClip(project, selected.id, editor.playheadMs)} onClick={() => splitClipAtPlayhead()}>分割</button><button onClick={() => createTrack('caption')}>+ 字幕轨</button><button onClick={() => createTrack('video')}>+ 视频轨</button><button onClick={() => createTrack('music')}>+ 音乐轨</button><button onClick={() => createTrack('sfx')}>+ 音效轨</button><label>缩放 <input aria-label="时间轴缩放" type="range" min="45" max="240" value={editor.zoom} onChange={(event) => setEditor((previous) => ({ ...previous, zoom: Number(event.target.value) }))} /></label></div></div>
         <div className="timeline-viewport">
           <div className="timeline-ruler-row"><div className="timeline-ruler-label">轨道</div><div className="timeline-ruler-scroll" ref={rulerScrollRef} onScroll={syncRulerScroll}><div className="ruler" style={{ width: `${contentWidth - TRACK_HEADER_WIDTH_PX}px` }}>{ticks.map((time) => <span key={time} style={{ left: `${timeToTimelineX(time, editor.zoom) - TRACK_HEADER_WIDTH_PX}px` }}>{formatTime(time).slice(0, 5)}</span>)}</div></div></div>
-          <div className="timeline-body-viewport"><div className="timeline-scroll" ref={timelineScrollRef} onScroll={syncBodyScroll}><div className="timeline-content" style={{ width: `${contentWidth}px` }} onClick={clickTimeline}>{tracks.map((track) => <TrackRow key={track.id} track={track} clips={project.clips.filter((clip) => clip.trackId === track.id)} assetsById={assetsById} previewCache={timelinePreviewCacheRef.current} previewVersion={timelinePreviewVersion} selectedClipId={selected?.id} selectedTrackId={selectedTrackId} videoTrackCount={tracks.filter((item) => item.type === 'video').length} zoom={editor.zoom} onSelectTrack={setSelectedTrackId} onStartTrackDrag={startTrackDrag} onStartTrackResize={startTrackResize} onStartClipDrag={startClipDrag} onRename={(name) => setProject((previous) => renameTrack(previous, track.id, name))} onDelete={() => deleteTrack(track)} onSelectClip={(clip) => { setSelectedTrackId(track.id); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }} />)}</div></div><div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom) - timelineScrollLeft}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} /></div>
+          <div className="timeline-body-viewport"><div className="timeline-scroll" ref={timelineScrollRef} onScroll={syncBodyScroll}><div className="timeline-content" style={{ width: `${contentWidth}px` }} onClick={clickTimeline}>{tracks.map((track) => <TrackRow key={track.id} track={track} clips={project.clips.filter((clip) => clip.trackId === track.id)} assetsById={assetsById} previewCache={timelinePreviewCacheRef.current} previewVersion={timelinePreviewVersion} selectedClipId={selected?.id} selectedTrackId={selectedTrackId} videoTrackCount={tracks.filter((item) => item.type === 'video').length} zoom={editor.zoom} onSelectTrack={setSelectedTrackId} onStartTrackDrag={startTrackDrag} onStartTrackResize={startTrackResize} onStartClipDrag={startClipDrag} onRename={(name) => setProject((previous) => renameTrack(previous, track.id, name))} onDelete={() => deleteTrack(track)} onSelectClip={(clip) => { setSelectedTrackId(track.id); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }} onOpenContextMenu={openClipContextMenu} />)}</div></div><div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom) - timelineScrollLeft}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} /></div>
         </div>
       </section>
+      {clipContextMenu && <div className="clip-context-menu" role="menu" aria-label="片段操作菜单" style={{ left: `${clipContextMenu.x}px`, top: `${clipContextMenu.y}px` }} onPointerDown={(event) => event.stopPropagation()}><button role="menuitem" disabled={!canSplitTimelineClip(project, clipContextMenu.clipId, editor.playheadMs)} onClick={() => splitClipAtPlayhead(clipContextMenu.clipId)}>在播放头处分割</button></div>}
     </div>
   </main>;
 }
@@ -569,14 +609,14 @@ function Divider({ kind, onPointerDown, onDoubleClick }: { kind: LayoutDrag['kin
   return <div role="separator" aria-label={label} aria-orientation={horizontal ? 'horizontal' : 'vertical'} tabIndex={0} className={`layout-divider ${horizontal ? 'horizontal' : 'vertical'}`} onPointerDown={(event) => onPointerDown(event, kind)} onDoubleClick={onDoubleClick} />;
 }
 
-function TrackRow({ track, clips, assetsById, previewCache, previewVersion, selectedClipId, selectedTrackId, videoTrackCount, zoom, onSelectTrack, onStartTrackDrag, onStartTrackResize, onStartClipDrag, onRename, onDelete, onSelectClip }: { track: Track; clips: TimelineClip[]; assetsById: ReadonlyMap<string, Asset>; previewCache: TimelineMediaPreviewCache; previewVersion: number; selectedClipId?: string; selectedTrackId: string; videoTrackCount: number; zoom: number; onSelectTrack: (trackId: string) => void; onStartTrackDrag: (event: React.PointerEvent, track: Track) => void; onStartTrackResize: (event: React.PointerEvent, track: Track) => void; onStartClipDrag: (event: React.PointerEvent, clip: TimelineClip, mode: 'move' | 'left' | 'right') => void; onRename: (name: string) => void; onDelete: () => void; onSelectClip: (clip: TimelineClip) => void }) {
+function TrackRow({ track, clips, assetsById, previewCache, previewVersion, selectedClipId, selectedTrackId, videoTrackCount, zoom, onSelectTrack, onStartTrackDrag, onStartTrackResize, onStartClipDrag, onRename, onDelete, onSelectClip, onOpenContextMenu }: { track: Track; clips: TimelineClip[]; assetsById: ReadonlyMap<string, Asset>; previewCache: TimelineMediaPreviewCache; previewVersion: number; selectedClipId?: string; selectedTrackId: string; videoTrackCount: number; zoom: number; onSelectTrack: (trackId: string) => void; onStartTrackDrag: (event: React.PointerEvent, track: Track) => void; onStartTrackResize: (event: React.PointerEvent, track: Track) => void; onStartClipDrag: (event: React.PointerEvent, clip: TimelineClip, mode: 'move' | 'left' | 'right') => void; onRename: (name: string) => void; onDelete: () => void; onSelectClip: (clip: TimelineClip) => void; onOpenContextMenu: (event: React.MouseEvent, clip: TimelineClip) => void }) {
   return <div className={`track ${selectedTrackId === track.id ? 'selected-track' : ''}`} id={`track-row-${track.id}`} style={{ height: `${track.heightPx}px` }} onClick={() => onSelectTrack(track.id)}>
     <div className="track-label" onClick={(event) => event.stopPropagation()}>
       <button className="track-grip" aria-label={`拖动${track.name}排序`} title="拖动排序" onPointerDown={(event) => onStartTrackDrag(event, track)}>⠿</button>
       <input aria-label={`${track.name}名称`} value={track.name} onChange={(event) => onRename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} />
       <button className="track-delete" aria-label={`删除${track.name}`} title={track.clipIds.length ? '含有片段的轨道不能删除' : track.type === 'video' && videoTrackCount <= 1 ? '至少保留一条视频轨' : '删除空轨道'} disabled={track.clipIds.length > 0 || track.type === 'video' && videoTrackCount <= 1} onClick={onDelete}>×</button>
     </div>
-    <div className="track-lane" data-preview-version={previewVersion} style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><TimelineClipPreview clip={clip} asset={clip.assetId ? assetsById.get(clip.assetId) : undefined} cache={previewCache} zoom={zoom} /><span className="timeline-clip-label">{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
+    <div className="track-lane" data-preview-version={previewVersion} style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }} onContextMenu={(event) => onOpenContextMenu(event, clip)}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><TimelineClipPreview clip={clip} asset={clip.assetId ? assetsById.get(clip.assetId) : undefined} cache={previewCache} zoom={zoom} /><span className="timeline-clip-label">{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
     <div className="track-height-handle" aria-label={`调整${track.name}高度`} onPointerDown={(event) => onStartTrackResize(event, track)} />
   </div>;
 }
@@ -586,7 +626,8 @@ function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip;
   if (clip.type === 'audio') {
     const waveform = cache.getWaveform(clip.assetId);
     if (!waveform) return null;
-    const peaks = sampleWaveformRange(waveform, clip.sourceStartMs, clip.durationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3))));
+    const sourceDurationMs = clip.durationMs * (clip.playbackRate && clip.playbackRate > 0 ? clip.playbackRate : 1);
+    const peaks = sampleWaveformRange(waveform, clip.sourceStartMs, sourceDurationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3))));
     return <div className="audio-waveform" aria-label="音频波形" aria-hidden="true">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>;
   }
   if (clip.type === 'video' && asset) {

@@ -6,6 +6,8 @@ export const getAsset = (project: Project, assetId: string) => project.assets.fi
 export const getTrack = (project: Project, trackId: string) => project.tracks.find((track) => track.id === trackId);
 export const getVideoClips = (project: Project) => project.clips.filter((clip) => clip.type === 'video');
 export const getProjectDuration = (project: Project) => getVideoClips(project).reduce((end, clip) => Math.max(end, clip.startMs + clip.durationMs), 0);
+export const getClipPlaybackRate = (clip: TimelineClip) => clip.playbackRate && clip.playbackRate > 0 ? clip.playbackRate : 1;
+export const sourceOffsetForTimelineOffset = (clip: TimelineClip, timelineOffsetMs: number) => Math.round(timelineOffsetMs * getClipPlaybackRate(clip));
 
 function withTrackClipIds(tracks: Track[], clips: TimelineClip[]) {
   return tracks.map((track) => ({ ...track, clipIds: clips.filter((clip) => clip.trackId === track.id).map((clip) => clip.id) }));
@@ -28,7 +30,7 @@ function normaliseToVideoDuration(project: Project, clips: TimelineClip[]): Time
     if (clip.startMs >= videoDuration) return [];
     const assetDuration = clip.assetId ? getAsset(project, clip.assetId)?.durationMs : undefined;
     const sourceRemaining = assetDuration === undefined ? Number.POSITIVE_INFINITY : assetDuration - clip.sourceStartMs;
-    const durationMs = Math.min(clip.durationMs, videoDuration - clip.startMs, sourceRemaining);
+    const durationMs = Math.min(clip.durationMs, videoDuration - clip.startMs, sourceRemaining / getClipPlaybackRate(clip));
     return durationMs >= MIN_DURATION_MS ? [{ ...clip, durationMs }] : [];
   });
 }
@@ -68,7 +70,7 @@ export function appendVideoClip(project: Project, asset: Asset, trackId = projec
   if (videoTrack?.type !== 'video') return project;
   const clip: TimelineClip = {
     id: id('video'), trackId: videoTrack.id, type: 'video', assetId: asset.id, name: asset.name,
-    startMs: videoTrackEnd(project, videoTrack.id), sourceStartMs: 0, durationMs: asset.durationMs, volume: 1,
+    startMs: videoTrackEnd(project, videoTrack.id), sourceStartMs: 0, durationMs: asset.durationMs, playbackRate: 1, volume: 1,
     videoLayout: defaultVideoLayout(project, asset),
   };
   return withClips(project, [...project.clips, clip]);
@@ -81,7 +83,7 @@ export function addAudioClip(project: Project, asset: Asset, trackId: string): P
   if (!projectDuration) return project;
   const clip: TimelineClip = {
     id: id('audio'), trackId, type: 'audio', assetId: asset.id, name: asset.name,
-    startMs: 0, sourceStartMs: 0, durationMs: Math.min(asset.durationMs, projectDuration), volume: 1,
+    startMs: 0, sourceStartMs: 0, durationMs: Math.min(asset.durationMs, projectDuration), playbackRate: 1, volume: 1,
   };
   return withClips(project, [...project.clips, clip]);
 }
@@ -95,7 +97,7 @@ export function addCaption(project: Project, trackId = project.tracks.find((trac
   if (durationMs < MIN_DURATION_MS || track?.type !== 'caption') return project;
   const clip: TimelineClip = {
     id: id('caption'), trackId: track.id, type: 'caption', name: draft?.text.trim().slice(0, 18) || '新字幕', startMs,
-    sourceStartMs: 0, durationMs, volume: 1, text: draft?.text.trim() || '在这里输入字幕',
+    sourceStartMs: 0, durationMs, playbackRate: 1, volume: 1, text: draft?.text.trim() || '在这里输入字幕',
     captionStyle: { fontSize: 46, color: '#ffffff', position: 'bottom' },
   };
   return withClips(project, [...project.clips, clip]);
@@ -107,6 +109,33 @@ export function updateClip(project: Project, clipId: string, patch: Partial<Time
 
 export function removeClip(project: Project, clipId: string): Project {
   return withClips(project, project.clips.filter((clip) => clip.id !== clipId));
+}
+
+export function canSplitTimelineClip(project: Project, clipId: string, splitTimeMs: number): boolean {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || clip.type === 'caption') return false;
+  return splitTimeMs > clip.startMs + MIN_DURATION_MS && splitTimeMs < clip.startMs + clip.durationMs - MIN_DURATION_MS;
+}
+
+/**
+ * Replaces one video/audio timeline instance with two source-contiguous instances.
+ * durationMs is timeline time; source offsets are rate-aware for the Phase 5.5 model.
+ */
+export function splitTimelineClip(project: Project, clipId: string, splitTimeMs: number): Project {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || !canSplitTimelineClip(project, clipId, splitTimeMs)) return project;
+  const splitAtMs = Math.round(splitTimeMs);
+  const leftDurationMs = splitAtMs - clip.startMs;
+  const sourceOffsetMs = sourceOffsetForTimelineOffset(clip, leftDurationMs);
+  const left: TimelineClip = { ...clip, id: id(clip.type), durationMs: leftDurationMs };
+  const right: TimelineClip = {
+    ...clip,
+    id: id(clip.type),
+    startMs: splitAtMs,
+    sourceStartMs: clip.sourceStartMs + sourceOffsetMs,
+    durationMs: clip.durationMs - leftDurationMs,
+  };
+  return withClips(project, project.clips.flatMap((item) => item.id === clipId ? [left, right] : [item]));
 }
 
 export function addTrack(project: Project, type: TrackType, trackId = id('track')): Project {
