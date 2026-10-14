@@ -286,10 +286,14 @@ export default function App() {
     setEditor((previous) => ({ ...previous, status: 'ready', message: '已创建手动字幕' }));
   }
 
-  function showMaterialLibrary() {
-    setMaterialFilter('all');
-    setEditor((previous) => ({ ...previous, status: 'ready', message: '请选择下方素材并添加到时间轴' }));
+  function showMaterialLibrary(filter: Extract<MaterialFilter, 'music' | 'sfx'>) {
+    setMaterialFilter(filter);
+    setEditor((previous) => ({ ...previous, status: 'ready', message: `已切换到${filter === 'music' ? '音乐' : '音效'}素材库` }));
     requestAnimationFrame(() => materialListRef.current?.scrollTo({ top: 0, behavior: 'smooth' }));
+  }
+
+  function showGenerationUnavailable(kind: 'music' | 'sfx') {
+    setEditor((previous) => ({ ...previous, status: 'ready', message: `${kind === 'music' ? '音乐' : '音效'}生成功能待接入；可使用对应素材库导入本地文件。` }));
   }
 
   function createTrack(type: TrackType) {
@@ -567,13 +571,14 @@ export default function App() {
         <aside className="asset-panel panel">
           <div className="material-actions">
             <div className="material-heading"><h2>素材库</h2><span>本地会话</span></div>
-            <div className="material-entry-grid">
-              <button className="material-entry video-entry" onClick={() => videoInputRef.current?.click()}><i>▣</i><span>导入/生成视频</span><small>本地 MP4 · 生成待接入</small></button>
-              <button className="material-entry music-entry" onClick={() => musicInputRef.current?.click()}><i>♫</i><span>导入/生成音乐</span><small>MP3/WAV · 生成待接入</small></button>
-              <button className="material-entry sfx-entry" onClick={() => sfxInputRef.current?.click()}><i>✦</i><span>导入/生成音效</span><small>MP3/WAV · 生成待接入</small></button>
-              <button className="material-entry caption-entry" onClick={() => setCaptionComposerOpen((open) => !open)}><i>T</i><span>导入/生成字幕</span><small>手动创建 · ASR 待接入</small></button>
+            <button className="material-entry material-primary-entry video-entry" onClick={() => videoInputRef.current?.click()}><i>▣</i><span>导入视频</span><small>本地 MP4</small></button>
+            <div className="material-quick-grid">
+              <button className="material-quick-entry music-entry" onClick={() => showMaterialLibrary('music')}>音乐素材库</button>
+              <button className="material-quick-entry music-entry" onClick={() => showGenerationUnavailable('music')}>生成音乐</button>
+              <button className="material-quick-entry sfx-entry" onClick={() => showMaterialLibrary('sfx')}>音效素材库</button>
+              <button className="material-quick-entry sfx-entry" onClick={() => showGenerationUnavailable('sfx')}>生成音效</button>
             </div>
-            <button className="material-library-entry" onClick={showMaterialLibrary}><i>⌘</i> 从素材库导入</button>
+            <button className="material-entry material-caption-entry caption-entry" onClick={() => setCaptionComposerOpen((open) => !open)}><i>T</i><span>添加字幕</span><small>手动创建</small></button>
             <input ref={videoInputRef} aria-label="导入视频" className="visually-hidden" type="file" accept="video/mp4" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importVideo(file); }} />
             <input ref={musicInputRef} aria-label="导入音乐" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importAudio(file, 'music'); }} />
             <input ref={sfxInputRef} aria-label="导入音效" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importAudio(file, 'sfx'); }} />
