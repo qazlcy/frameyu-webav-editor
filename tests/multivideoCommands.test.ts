@@ -51,6 +51,20 @@ describe('multi-video project commands', () => {
     expect(getProjectDuration(project)).toBe(7000);
   });
 
+  it('rejects a video trim that would overlap another clip and keeps later clips in place after deletion', () => {
+    let project = addAsset(emptyProject(), video('a', 7000));
+    project = addAsset(project, video('b', 4000));
+    project = appendVideoClip(project, project.assets[0]);
+    project = appendVideoClip(project, project.assets[1]);
+    const [first, second] = project.clips;
+    project = trimProjectClip(project, first.id, 6000, 'right');
+    project = moveProjectClip(project, second.id, 6500);
+    const rejected = trimProjectClip(project, first.id, 6600, 'right');
+    expect(rejected).toBe(project);
+    const afterDelete = removeClip(project, first.id);
+    expect(afterDelete.clips.find((clip) => clip.id === second.id)?.startMs).toBe(6500);
+  });
+
   it('does not let audio or captions extend the project and preserves valid editing paths', () => {
     let project = addAsset(emptyProject(), video('a', 4000));
     project = addAsset(project, audio);

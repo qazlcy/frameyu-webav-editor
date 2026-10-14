@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, removeClip, renameTrack, reorderTrack, resizeTrack, trimProjectClip, updateClip } from './editor/commands';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, trimProjectClip, updateClip } from './editor/commands';
 import { emptyProject, type Asset, type EditorState, type Project, type TimelineClip, type Track, type TrackType } from './editor/types';
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
@@ -268,7 +268,6 @@ export default function App() {
   }
 
   function startClipDrag(event: React.PointerEvent, clip: TimelineClip, mode: Extract<DragState, { kind: 'clip' }>['mode']) {
-    if (clip.type === 'video') return;
     event.stopPropagation();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     setSelectedTrackId(clip.trackId);
@@ -351,6 +350,12 @@ export default function App() {
     }
     const nextTimeMs = pointerTime(event);
     const deltaMs = nextTimeMs - activeDrag.pointerStartMs;
+    if (activeDrag.clip.type === 'video') {
+      if (activeDrag.mode === 'move') setProject((previous) => moveProjectClip(previous, activeDrag.clip.id, activeDrag.clip.startMs + deltaMs));
+      if (activeDrag.mode === 'left') setProject((previous) => trimProjectClip(previous, activeDrag.clip.id, activeDrag.clip.startMs + deltaMs, 'left'));
+      if (activeDrag.mode === 'right') setProject((previous) => trimProjectClip(previous, activeDrag.clip.id, activeDrag.clip.durationMs + deltaMs, 'right'));
+      return;
+    }
     if (activeDrag.mode === 'move') {
       const target = trackAtClientY(event.clientY);
       setProject((previous) => moveClipToCompatibleTrack(previous, activeDrag.clip.id, activeDrag.clip.startMs + deltaMs, target?.id ?? activeDrag.clip.trackId));
@@ -444,7 +449,7 @@ function TrackRow({ track, clips, selectedClipId, selectedTrackId, zoom, onSelec
       <input aria-label={`${track.name}名称`} value={track.name} onChange={(event) => onRename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} />
       <button className="track-delete" aria-label={`删除${track.name}`} title={track.type === 'video' ? '默认视频轨不能删除' : track.clipIds.length ? '含有片段的轨道不能删除' : '删除空轨道'} disabled={track.type === 'video'} onClick={onDelete}>×</button>
     </div>
-    <div className="track-lane" style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><span>{clip.type === 'caption' ? clip.text : clip.name}</span>{clip.type !== 'video' && <i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} />}</div>)}</div>
+    <div className="track-lane" style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><span>{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
     <div className="track-height-handle" aria-label={`调整${track.name}高度`} onPointerDown={(event) => onStartTrackResize(event, track)} />
   </div>;
 }
@@ -453,5 +458,5 @@ function Properties({ clip, asset, projectDuration, onUpdate, onDelete }: { clip
   const number = (label: string, value: number, update: (next: number) => void, min = 0, max = projectDuration) => <label className="field">{label}<input type="number" min={min} max={max} value={Math.round(value)} onChange={(event) => update(Number(event.target.value))} /></label>;
   if (clip.type === 'caption') return <div className="properties"><label className="field">字幕文字<textarea value={clip.text ?? ''} onChange={(event) => onUpdate({ text: event.target.value, name: event.target.value.slice(0, 18) || '字幕' })} /></label>{number('开始时间（ms）', clip.startMs, (startMs) => onUpdate({ startMs: clamp(startMs, 0, projectDuration - clip.durationMs) }))}{number('结束时间（ms）', clip.startMs + clip.durationMs, (endMs) => onUpdate({ durationMs: clamp(endMs - clip.startMs, 100, projectDuration - clip.startMs) }), 100, projectDuration)}<label className="field">字号<input type="number" min="16" max="100" value={clip.captionStyle?.fontSize ?? 46} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, fontSize: Number(event.target.value) } })} /></label><label className="field">颜色<input type="color" value={clip.captionStyle?.color ?? '#ffffff'} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, color: event.target.value } })} /></label><label className="field">位置<select value={clip.captionStyle?.position ?? 'bottom'} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, position: event.target.value as 'top' | 'center' | 'bottom' } })}><option value="bottom">下方居中</option><option value="center">画面中央</option><option value="top">顶部居中</option></select></label><button className="danger" onClick={onDelete}>删除字幕</button></div>;
   if (clip.type === 'audio') return <div className="properties"><p><b>{clip.name}</b></p>{number('轨道开始（ms）', clip.startMs, (startMs) => onUpdate({ startMs: clamp(startMs, 0, projectDuration - clip.durationMs) }))}{number('源文件起点（ms）', clip.sourceStartMs, (sourceStartMs) => onUpdate({ sourceStartMs: clamp(sourceStartMs, 0, Math.max(0, (asset?.durationMs ?? 0) - clip.durationMs)) }), 0, asset?.durationMs ?? 0)}{number('使用时长（ms）', clip.durationMs, (durationMs) => onUpdate({ durationMs: clamp(durationMs, 100, Math.min(projectDuration - clip.startMs, (asset?.durationMs ?? 0) - clip.sourceStartMs)) }), 100, asset?.durationMs ?? projectDuration)}<label className="field">音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><button className="danger" onClick={onDelete}>删除片段</button></div>;
-  return <div className="properties"><p><b>{clip.name}</b></p><p>视频片段保留原声。移动与左右裁剪将在下一阶段开放。</p></div>;
+  return <div className="properties"><p><b>{clip.name}</b></p><p>在时间轴中拖动片段移动；拖动左右白色边缘裁剪源视频。画面和原声使用同一源区间。</p><button className="danger" onClick={onDelete}>删除视频片段</button></div>;
 }

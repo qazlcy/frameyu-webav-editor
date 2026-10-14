@@ -40,7 +40,7 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 命令 | 结果 |
 | --- | --- |
 | `npm run typecheck` | 通过 |
-| `npm run test` | 通过：22/22（动态轨道与布局后） |
+| `npm run test` | 通过：23/23（含视频片段交互边界） |
 | `npm run build` | 通过：Vite 生产构建完成 |
 | `npm run test:e2e:local-libs` | 通过：1 个工作台交互 E2E；另有 1 个真实媒体 E2E 因 WebCodecs 环境限制 skipped。 |
 
@@ -88,7 +88,7 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 顺序片段 E2E | 已编写 / 远程跳过 | 使用官方 `webav-123.mp4` 与 `webav-223.mp4`，再叠加 MP3 和字幕；在完整 WebCodecs 浏览器中检查两片段、下载、输出可重新读取元数据、输出时长。远程结果：`1 skipped`。 |
 | `typecheck` / 单测 / 构建 | 通过 | `npm run typecheck`；`npm run test`：15/15；`npm run build`。 |
 
-未验证：远程环境尚未生成或复播含两个视频片段的 MP4，因此不能声称实际多视频拼接已验收。下一步先在本地 Chrome/Edge 执行 README 的拼接清单；确认后才进入阶段 3.3 的视频片段移动、左右裁剪和删除 UI。
+未验证：远程环境尚未生成或复播含两个视频片段的 MP4，因此不能声称实际多视频拼接已验收。本地 Chrome/Edge 仍须执行 README 的拼接、裁剪和导出清单。
 
 ## 阶段 4：可调工作台与动态非视频轨道
 
@@ -104,7 +104,21 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | WebAV 多轨遍历 | 已验证（代码） | `WebAVAdapter` 按全部 `clip.type` 遍历视频、音频和字幕，不依赖 `music`、`sfx`、`caption` 的固定 ID；新轨中的有效片段会进入预览与导出。 |
 | 回归 | 通过 | `typecheck`、Vitest 22/22、生产构建通过。Playwright 工作台 E2E 通过，真实媒体 E2E 仍 skipped。 |
 
-未验证：本地 Chrome/Edge 尚需实际试听两条背景音乐、音效及多字幕轨混合后的预览/导出。远程 Chromium 不具备完整 WebCodecs，不能替代这一媒体验收。下一阶段才实现视频片段移动、左右裁剪和删除 UI；不新增第二视频轨或画中画。
+未验证：本地 Chrome/Edge 尚需实际试听两条背景音乐、音效及多字幕轨混合后的预览/导出。远程 Chromium 不具备完整 WebCodecs，不能替代这一媒体验收。
+
+## 阶段 3.3：单视频轨片段交互
+
+基线：`62b2800`。本阶段未新增第二视频轨、画中画或波纹编辑。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 视频片段移动 | 通过（状态逻辑/UI） | 已开放唯一视频轨内的片段拖动；继续通过 `moveProjectClip` 校验工程起点、源区间和同轨防重叠。空隙合法，不会自动吸附或波纹移动。 |
+| 视频左右裁剪 | 通过（状态逻辑/UI） | 两个白色边缘分别调用 `trimProjectClip`；左裁剪同步增加 `startMs`、`sourceStartMs` 并缩短时长，右裁剪仅修改时长。适配器现有 `MP4Clip.split` 实现会对画面与原声执行相同源区间裁剪。 |
+| 删除 | 通过（状态逻辑/UI） | 属性栏可删除视频片段；删除仅移除该片段，不会移动后续片段，其他对同一 Asset 的引用不受影响。 |
+| 防重叠回归 | 通过 | 新增单测覆盖：裁剪进入后续片段时命令被拒绝，删除前片段后剩余片段保留原 `startMs`。 |
+| 质量检查 | 通过 | `npm run typecheck`、Vitest 23/23、`npm run build` 均通过；Playwright 工作台测试通过，真实媒体 E2E 仍因 WebCodecs 缺失而跳过。 |
+
+未验证：拖动后真实 WebAV 预览和导出的裁剪内容、原声音画同步，以及两个源视频的成片拼接仍需在具备完整 WebCodecs 的 Chrome/Edge 按 README 清单复核；不得以远程无头结果替代该验收。
 
 ## 第二阶段：本地 Chrome 验收清单
 
