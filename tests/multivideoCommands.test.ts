@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, deleteEmptyTrack, getProjectDuration, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, trimProjectClip } from '../src/editor/commands';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, defaultVideoLayout, deleteEmptyTrack, getProjectDuration, getVideoLayerZIndex, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, setVideoLayoutMode, trimProjectClip, updateVideoLayout } from '../src/editor/commands';
 import { MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, emptyProject, type Asset } from '../src/editor/types';
 
 const video = (id: string, durationMs: number): Asset => ({ id, name: `${id}.mp4`, type: 'video', mimeType: 'video/mp4', durationMs, width: 1280, height: 720 });
@@ -136,5 +136,47 @@ describe('multi-video project commands', () => {
       durationMs: musicClip.durationMs,
     });
     expect(moveClipToCompatibleTrack(moved, musicClip.id, musicClip.startMs, 'sfx')).toBe(moved);
+  });
+
+  it('allows overlapping video clips on distinct video tracks but not on the same track', () => {
+    let project = addAsset(emptyProject(), video('a', 5000));
+    project = addAsset(project, video('b', 4000));
+    project = appendVideoClip(project, project.assets[0]);
+    project = addTrack(project, 'video', 'video-2');
+    project = appendVideoClip(project, project.assets[1], 'video-2');
+    const [first, second] = project.clips;
+    expect(second.startMs).toBe(0);
+    const moved = moveClipToCompatibleTrack(project, second.id, 2000, 'video');
+    expect(moved).toBe(project);
+    expect(moveProjectClip(project, second.id, 2000).clips.find((clip) => clip.id === second.id)?.startMs).toBe(2000);
+    expect(getProjectDuration(project)).toBe(5000);
+    expect(first.videoLayout).toEqual(defaultVideoLayout(project, project.assets[0]));
+  });
+
+  it('preserves video layout when crossing video tracks and maps track order to zIndex', () => {
+    let project = addAsset(emptyProject(), video('a', 5000));
+    project = appendVideoClip(project, project.assets[0]);
+    project = addTrack(project, 'video', 'video-2');
+    const original = project.clips[0];
+    project = setVideoLayoutMode(project, original.id, 'pip');
+    project = updateVideoLayout(project, original.id, { x: 800, opacity: 0.6 });
+    project = moveClipToCompatibleTrack(project, original.id, 1200, 'video-2');
+    const moved = project.clips[0];
+    expect(moved).toMatchObject({ trackId: 'video-2', startMs: 1200, sourceStartMs: 0, durationMs: 5000, videoLayout: { mode: 'pip', x: 800, opacity: 0.6 } });
+    expect(getVideoLayerZIndex(project, 'video')).toBe(0);
+    expect(getVideoLayerZIndex(project, 'video-2')).toBe(1);
+    project = reorderTrack(project, 'video-2', 0);
+    expect(getVideoLayerZIndex(project, 'video-2')).toBe(0);
+    expect(getVideoLayerZIndex(project, 'video')).toBe(1);
+  });
+
+  it('protects the final or non-empty video track from deletion', () => {
+    let project = emptyProject();
+    expect(deleteEmptyTrack(project, 'video')).toBe(project);
+    project = addTrack(project, 'video', 'video-2');
+    expect(deleteEmptyTrack(project, 'video-2').tracks.some((track) => track.id === 'video-2')).toBe(false);
+    project = addAsset(project, video('a', 2000));
+    project = appendVideoClip(project, project.assets.at(-1)!, 'video');
+    expect(deleteEmptyTrack(project, 'video')).toBe(project);
   });
 });

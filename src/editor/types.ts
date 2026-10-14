@@ -34,6 +34,19 @@ export interface CaptionStyle {
   position: CaptionPosition;
 }
 
+export type VideoLayoutMode = 'full' | 'pip' | 'custom';
+
+/** Coordinates use the project's fixed internal 1280×720 canvas, never CSS pixels. */
+export interface VideoLayout {
+  mode: VideoLayoutMode;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+  keepAspectRatio: boolean;
+}
+
 export interface TimelineClip {
   id: string;
   trackId: string;
@@ -44,6 +57,8 @@ export interface TimelineClip {
   sourceStartMs: number;
   durationMs: number;
   volume: number;
+  muted?: boolean;
+  videoLayout?: VideoLayout;
   text?: string;
   captionStyle?: CaptionStyle;
 }

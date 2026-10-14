@@ -1,6 +1,6 @@
 import { AVCanvas } from '@webav/av-canvas';
 import { AudioClip, Combinator, ImgClip, MP4Clip, renderTxt2ImgBitmap, VisibleSprite } from '@webav/av-cliper';
-import { getProjectDuration } from '../editor/commands';
+import { defaultVideoLayout, getProjectDuration, getVideoLayerZIndex } from '../editor/commands';
 import { msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, CaptionPosition, Project, TimelineClip } from '../editor/types';
 
@@ -19,11 +19,16 @@ export interface PreviewCallbacks {
   onPlaybackChange?: (playing: boolean) => void;
 }
 
+interface RuntimeSprite {
+  sprite: VisibleSprite;
+  mediaSignature: string;
+}
+
 const positionY = (position: CaptionPosition) => ({ top: 70, center: 330, bottom: 610 }[position]);
 
 export class WebAVAdapter {
   private canvas: AVCanvas | null = null;
-  private sprites: VisibleSprite[] = [];
+  private sprites = new Map<string, RuntimeSprite>();
   private assets = new Map<string, RuntimeAsset>();
   private project: Project | null = null;
   private callbacks?: PreviewCallbacks;
@@ -98,14 +103,22 @@ export class WebAVAdapter {
     if (!this.canvas) throw new Error('预览画布尚未初始化');
     this.project = project;
     this.canvas.pause();
-    this.clearSprites();
-    for (const clip of project.clips.filter((item) => item.type === 'video').sort((left, right) => left.startMs - right.startMs)) {
-      await this.addVideoSprite(clip, project);
+    const expectedIds = new Set<string>();
+    for (const clip of project.clips.filter((item) => item.type === 'video')) {
+      expectedIds.add(clip.id);
+      await this.syncVideoSprite(clip, project);
     }
-    for (const clip of project.clips.filter((item) => item.type === 'audio')) await this.addAudioSprite(clip);
-    for (const clip of project.clips.filter((item) => item.type === 'caption')) await this.addCaptionSprite(clip);
+    for (const clip of project.clips.filter((item) => item.type === 'audio')) {
+      expectedIds.add(clip.id);
+      await this.syncAudioSprite(clip);
+    }
+    for (const clip of project.clips.filter((item) => item.type === 'caption')) {
+      expectedIds.add(clip.id);
+      await this.syncCaptionSprite(clip);
+    }
+    for (const clipId of this.sprites.keys()) if (!expectedIds.has(clipId)) this.removeSprite(clipId);
     await this.canvas.previewFrame(msToUs(Math.max(0, previewMs)));
-    console.log('[WebAV] project synchronized', { sprites: this.sprites.length, previewMs });
+    console.log('[WebAV] project synchronized', { sprites: this.sprites.size, previewMs });
   }
 
   play(startMs: number, endMs: number) {
@@ -149,10 +162,35 @@ export class WebAVAdapter {
     console.log('[WebAV] adapter destroyed');
   }
 
-  private async addVideoSprite(clip: TimelineClip, project: Project) {
+  private async syncVideoSprite(clip: TimelineClip, project: Project) {
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, volume: clip.volume, muted: clip.muted });
+    const current = this.sprites.get(clip.id);
+    if (current?.mediaSignature === mediaSignature) {
+      this.applyVideoSprite(current.sprite, clip, project);
+      return;
+    }
+    this.removeSprite(clip.id);
+    const sprite = await this.createVideoSprite(clip, project);
+    await this.addSprite(clip.id, sprite, mediaSignature);
+  }
+
+  private applyVideoSprite(sprite: VisibleSprite, clip: TimelineClip, project: Project) {
+    const asset = clip.assetId ? this.assets.get(clip.assetId)?.asset : undefined;
+    const layout = clip.videoLayout ?? defaultVideoLayout(project, asset);
+    sprite.rect.x = layout.x;
+    sprite.rect.y = layout.y;
+    sprite.rect.w = layout.width;
+    sprite.rect.h = layout.height;
+    sprite.opacity = layout.opacity;
+    // Track order is bottom-to-top: a later video track gets the higher zIndex and covers earlier tracks.
+    sprite.zIndex = getVideoLayerZIndex(project, clip.trackId);
+    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+  }
+
+  private async createVideoSprite(clip: TimelineClip, project: Project) {
     const runtime = clip.assetId ? this.assets.get(clip.assetId) : undefined;
     if (!runtime) throw new Error(`视频素材“${clip.name}”不存在，请重新导入。`);
-    let media = new MP4Clip(runtime.file.stream());
+    let media = new MP4Clip(runtime.file.stream(), { audio: { volume: clip.muted ? 0 : clip.volume } });
     await media.ready;
     if (clip.sourceStartMs > 0) {
       const source = media;
@@ -168,22 +206,23 @@ export class WebAVAdapter {
       discarded.destroy();
       media = selected;
     }
-    const meta = media.meta;
     const sprite = new VisibleSprite(media);
-    const scale = Math.min(project.width / meta.width, project.height / meta.height);
-    sprite.rect.w = Math.round(meta.width * scale);
-    sprite.rect.h = Math.round(meta.height * scale);
-    sprite.rect.x = Math.round((project.width - sprite.rect.w) / 2);
-    sprite.rect.y = Math.round((project.height - sprite.rect.h) / 2);
-    sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+    this.applyVideoSprite(sprite, clip, project);
     sprite.interactable = 'disabled';
-    await this.addSprite(sprite);
+    return sprite;
   }
 
-  private async addAudioSprite(clip: TimelineClip) {
+  private async syncAudioSprite(clip: TimelineClip) {
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, durationMs: clip.durationMs, volume: clip.volume, muted: clip.muted });
+    const current = this.sprites.get(clip.id);
+    if (current?.mediaSignature === mediaSignature) {
+      current.sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+      return;
+    }
+    this.removeSprite(clip.id);
     const runtime = clip.assetId ? this.assets.get(clip.assetId) : undefined;
     if (!runtime) throw new Error(`音频素材“${clip.name}”不存在，请重新导入。`);
-    let audio = new AudioClip(runtime.file.stream(), { volume: clip.volume });
+    let audio = new AudioClip(runtime.file.stream(), { volume: clip.muted ? 0 : clip.volume });
     await audio.ready;
     if (clip.sourceStartMs > 0) {
       const source = audio;
@@ -202,10 +241,17 @@ export class WebAVAdapter {
     const sprite = new VisibleSprite(audio);
     sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
     sprite.interactable = 'disabled';
-    await this.addSprite(sprite);
+    await this.addSprite(clip.id, sprite, mediaSignature);
   }
 
-  private async addCaptionSprite(clip: TimelineClip) {
+  private async syncCaptionSprite(clip: TimelineClip) {
+    const mediaSignature = JSON.stringify({ text: clip.text, captionStyle: clip.captionStyle });
+    const current = this.sprites.get(clip.id);
+    if (current?.mediaSignature === mediaSignature) {
+      current.sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
+      return;
+    }
+    this.removeSprite(clip.id);
     const style = clip.captionStyle ?? { fontSize: 46, color: '#ffffff', position: 'bottom' as const };
     const bitmap = await renderTxt2ImgBitmap(clip.text ?? '', `font-size:${style.fontSize}px; color:${style.color}; font-weight:700; text-shadow: 2px 2px 5px #000; padding:8px 18px;`);
     const media = new ImgClip(bitmap);
@@ -214,22 +260,26 @@ export class WebAVAdapter {
     sprite.rect.x = Math.round((1280 - media.meta.width) / 2);
     sprite.rect.y = positionY(style.position);
     sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs) };
-    sprite.zIndex = 10;
+    sprite.zIndex = 10_000;
     sprite.interactable = 'selectable';
-    await this.addSprite(sprite);
+    await this.addSprite(clip.id, sprite, mediaSignature);
   }
 
-  private async addSprite(sprite: VisibleSprite) {
+  private async addSprite(clipId: string, sprite: VisibleSprite, mediaSignature: string) {
     await this.canvas?.addSprite(sprite);
-    this.sprites.push(sprite);
+    this.sprites.set(clipId, { sprite, mediaSignature });
+  }
+
+  private removeSprite(clipId: string) {
+    const runtime = this.sprites.get(clipId);
+    if (!runtime) return;
+    this.canvas?.removeSprite(runtime.sprite);
+    runtime.sprite.destroy();
+    this.sprites.delete(clipId);
   }
 
   private clearSprites() {
     if (!this.canvas) return;
-    for (const sprite of this.sprites) {
-      this.canvas.removeSprite(sprite);
-      sprite.destroy();
-    }
-    this.sprites = [];
+    for (const clipId of this.sprites.keys()) this.removeSprite(clipId);
   }
 }

@@ -1,4 +1,4 @@
-import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType } from './types';
+import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoLayoutMode } from './types';
 import { MIN_DURATION_MS, clamp, moveClip, snapMs, trimLeft, trimRight } from './timelineMath';
 
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
@@ -39,19 +39,37 @@ function withClips(project: Project, clips: TimelineClip[]): Project {
 }
 
 function videoOverlaps(project: Project, candidate: TimelineClip): boolean {
-  return getVideoClips(project).some((clip) => clip.id !== candidate.id && candidate.startMs < clip.startMs + clip.durationMs && clip.startMs < candidate.startMs + candidate.durationMs);
+  return getVideoClips(project).some((clip) => clip.id !== candidate.id && clip.trackId === candidate.trackId && candidate.startMs < clip.startMs + clip.durationMs && clip.startMs < candidate.startMs + candidate.durationMs);
+}
+
+export function defaultVideoLayout(project: Project, asset?: Asset, mode: VideoLayoutMode = 'full'): VideoLayout {
+  const aspect = asset?.width && asset?.height ? asset.width / asset.height : 16 / 9;
+  if (mode === 'pip') {
+    const width = Math.round(project.width / 4);
+    const height = Math.round(width / aspect);
+    return { mode, x: project.width - width - 32, y: 32, width, height, opacity: 1, keepAspectRatio: true };
+  }
+  const scale = Math.min(project.width / (asset?.width ?? project.width), project.height / (asset?.height ?? project.height));
+  const width = Math.round((asset?.width ?? project.width) * scale);
+  const height = Math.round((asset?.height ?? project.height) * scale);
+  return { mode, x: Math.round((project.width - width) / 2), y: Math.round((project.height - height) / 2), width, height, opacity: 1, keepAspectRatio: true };
+}
+
+function videoTrackEnd(project: Project, trackId: string) {
+  return getVideoClips(project).filter((clip) => clip.trackId === trackId).reduce((end, clip) => Math.max(end, clip.startMs + clip.durationMs), 0);
 }
 
 export function addAsset(project: Project, asset: Asset): Project {
   return { ...project, assets: [...project.assets.filter((item) => item.id !== asset.id), asset] };
 }
 
-export function appendVideoClip(project: Project, asset: Asset): Project {
-  const videoTrack = project.tracks.find((track) => track.type === 'video');
-  if (!videoTrack) return project;
+export function appendVideoClip(project: Project, asset: Asset, trackId = project.tracks.find((track) => track.type === 'video')?.id): Project {
+  const videoTrack = trackId ? getTrack(project, trackId) : undefined;
+  if (videoTrack?.type !== 'video') return project;
   const clip: TimelineClip = {
     id: id('video'), trackId: videoTrack.id, type: 'video', assetId: asset.id, name: asset.name,
-    startMs: getProjectDuration(project), sourceStartMs: 0, durationMs: asset.durationMs, volume: 1,
+    startMs: videoTrackEnd(project, videoTrack.id), sourceStartMs: 0, durationMs: asset.durationMs, volume: 1,
+    videoLayout: defaultVideoLayout(project, asset),
   };
   return withClips(project, [...project.clips, clip]);
 }
@@ -91,9 +109,9 @@ export function removeClip(project: Project, clipId: string): Project {
   return withClips(project, project.clips.filter((clip) => clip.id !== clipId));
 }
 
-export function addTrack(project: Project, type: Exclude<TrackType, 'video'>, trackId = id('track')): Project {
+export function addTrack(project: Project, type: TrackType, trackId = id('track')): Project {
   const sameTypeCount = project.tracks.filter((track) => track.type === type).length;
-  const baseName = ({ caption: '字幕', music: '背景音乐', sfx: '音效' } as const)[type];
+  const baseName = ({ caption: '字幕', video: '视频', music: '背景音乐', sfx: '音效' } as const)[type];
   const track: Track = {
     id: trackId,
     type,
@@ -129,7 +147,8 @@ export function reorderTrack(project: Project, trackId: string, targetIndex: num
 
 export function deleteEmptyTrack(project: Project, trackId: string): Project {
   const track = getTrack(project, trackId);
-  if (!track || track.type === 'video' || track.clipIds.length > 0) return project;
+  const videoTrackCount = project.tracks.filter((item) => item.type === 'video').length;
+  if (!track || track.clipIds.length > 0 || track.type === 'video' && videoTrackCount <= 1) return project;
   return withTracks(project, project.tracks.filter((item) => item.id !== trackId));
 }
 
@@ -137,8 +156,11 @@ export function moveClipToCompatibleTrack(project: Project, clipId: string, star
   const clip = project.clips.find((item) => item.id === clipId);
   const sourceTrack = clip ? getTrack(project, clip.trackId) : undefined;
   const targetTrack = getTrack(project, targetTrackId);
-  if (!clip || !sourceTrack || !targetTrack || sourceTrack.type !== targetTrack.type || clip.type === 'video') return project;
-  const moved = moveClip({ ...clip, trackId: targetTrack.id }, startMs, getProjectDuration(project));
+  if (!clip || !sourceTrack || !targetTrack || sourceTrack.type !== targetTrack.type) return project;
+  const moved = clip.type === 'video'
+    ? { ...clip, trackId: targetTrack.id, startMs: Math.max(0, snapMs(startMs)) }
+    : moveClip({ ...clip, trackId: targetTrack.id }, startMs, getProjectDuration(project));
+  if (moved.type === 'video' && videoOverlaps(project, moved)) return project;
   return withClips(project, project.clips.map((item) => item.id === clipId ? moved : item));
 }
 
@@ -169,4 +191,32 @@ export function trimProjectClip(project: Project, clipId: string, valueMs: numbe
     })()
     : { ...clip, durationMs: clamp(snapMs(valueMs), MIN_DURATION_MS, assetDuration - clip.sourceStartMs) };
   return videoOverlaps(project, candidate) ? project : withClips(project, project.clips.map((item) => item.id === clipId ? candidate : item));
+}
+
+export function updateVideoLayout(project: Project, clipId: string, patch: Partial<VideoLayout>): Project {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || clip.type !== 'video') return project;
+  const asset = clip.assetId ? getAsset(project, clip.assetId) : undefined;
+  const current = clip.videoLayout ?? defaultVideoLayout(project, asset);
+  const next = { ...current, ...patch };
+  const aspect = asset?.width && asset?.height ? asset.width / asset.height : current.width / current.height;
+  if (next.keepAspectRatio && patch.width !== undefined && patch.height === undefined) next.height = Math.round(next.width / aspect);
+  if (next.keepAspectRatio && patch.height !== undefined && patch.width === undefined) next.width = Math.round(next.height * aspect);
+  next.width = clamp(Math.round(next.width), 40, project.width);
+  next.height = clamp(Math.round(next.height), 40, project.height);
+  next.x = clamp(Math.round(next.x), 0, project.width - next.width);
+  next.y = clamp(Math.round(next.y), 0, project.height - next.height);
+  next.opacity = clamp(next.opacity, 0, 1);
+  return withClips(project, project.clips.map((item) => item.id === clipId ? { ...item, videoLayout: next } : item));
+}
+
+export function setVideoLayoutMode(project: Project, clipId: string, mode: Extract<VideoLayoutMode, 'full' | 'pip'>): Project {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || clip.type !== 'video') return project;
+  return updateVideoLayout(project, clipId, defaultVideoLayout(project, clip.assetId ? getAsset(project, clip.assetId) : undefined, mode));
+}
+
+export function getVideoLayerZIndex(project: Project, trackId: string): number {
+  const index = project.tracks.filter((track) => track.type === 'video').sort((left, right) => left.order - right.order).findIndex((track) => track.id === trackId);
+  return Math.max(0, index);
 }
