@@ -224,7 +224,7 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 
 | 项目 | 结果 | 记录 |
 | --- | --- | --- |
-| 触发时机 | 已实现 | 保留既有“音频 Asset 加入 `project.assets` 后触发”语义。导入完成后，`noteAudioImported` 立即写入等待状态；随后既有 effect 调用 `ensureWaveform` 入队，不需要先创建时间轴片段。 |
+| 触发时机 | 已实现 | 保留既有“音频 Asset 加入 `project.assets` 后触发”语义。导入完成后先登记为“尚未调度”，随后 effect 在本地 `File` 可用时调用 `ensureWaveform` 入队；不需要先创建时间轴片段。 |
 | 串行任务与去重 | 通过（单测） | 新增 `AnalysisTaskQueue`，完整 PCM 解码默认仅并发一项。既有 `waveformTasks` 与 Asset ID 缓存保留，同一素材的重复引用/重复请求返回同一个 Promise；失败不会阻塞后续任务，失败后可显式重新分析。 |
 | 状态与错误反馈 | 已实现 / 工作台待浏览器验收 | 音频素材卡显示等待、正在解码、正在生成波形、完成、失败；失败显示原始可理解原因，并提供“重新分析”。时间轴仍可在分析期间添加片段，随后由缓存通知自动刷新。 |
 | 分阶段性能日志 | 已实现 / 待本地实测 | `[WaveformAnalysis]` 日志与素材卡下方可展开、可复制的诊断面板记录 Asset ID、素材名、时长，以及导入到任务创建、排队、AudioClip 创建、`ready` 解码、PCM 获取、峰值计算、缓存、UI 通知、总耗时。远程环境缺完整 WebCodecs，不能据此编造真实音频耗时。 |
@@ -248,5 +248,14 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 时间轴显示 | 已实现 / 工作台待浏览器验收 | 有缓存时视频片段上半显示缩略图、下半显示原声波形；取样继续使用既有 `sourceStartMs`、`sourceDurationMs` 与 playbackRate 映射。无音轨只显示缩略图；视频 `muted` 不影响素材原声波形。 |
 | 自动检查 | 通过 | 新增有声/无声/静音视频、连续 tick、缓存去重、失败重试、分割/跨轨/静音/倍速源窗口映射和流式峰值单测；`npm run typecheck`、Vitest 53/53 通过。 |
 | Playwright 工作台回归 | 部分通过 | 直接运行 `npm run test:e2e` 时用户缓存内缺少 `chromium_headless_shell`，4 项均未启动。项目本地浏览器依赖命令 `npm run test:e2e:local-libs` 为 3 通过、1 跳过；跳过项需要完整 WebCodecs 的真实 MP4 合成，不能视为媒体功能通过。 |
+
+### Phase 6.2 补丁：任务创建链路修复
+
+本地 Chrome 截图显示“等待分析”但诊断为 0，根因不是 PCM 解码：`src/main.tsx` 启用的 React 18 `StrictMode` 会执行一次开发用 effect cleanup/setup；`App.tsx` 原先在 cleanup 中立即销毁 `TimelineMediaPreviewCache`，而同一 ref 在第二次 setup 后仍被使用。队列因而处于已释放状态，状态写入和诊断日志被忽略，后续入队请求被拒绝。
+
+- 缓存释放改为延迟一个宏任务；StrictMode 的立即重设会取消释放，实际卸载仍会销毁缓存及媒体资源。
+- 素材卡状态新增“尚未调度”，不再把无任务误显示为“等待分析”；`analysis-requested` 在 `ensureWaveform`/`ensureVideoWaveform` 首次调用时立即写入诊断。
+- 集中调度函数会在 Project 已有 Asset 但运行时 `File` 暂缺时记录具体原因；运行时 File 注册版本变化后自动重新调度。
+- 自动回归：`npm run typecheck`、Vitest 54/54、`npm run build` 通过。新增“先 Asset 后 File”时序用例，验证补调度、可见诊断、缓存写入和单次解码。
 
 本地 Chrome/Edge 验收：导入有明显说话声的 MP4、带背景音乐的 MP4、无音轨 MP4、静音 MP4；检查素材卡状态、视频片段上下分层显示及诊断字段 `trackSplitMs`、`audioTickMs`。随后测试左/右裁剪、分割、同源重复引用、跨轨、静音及 0.5×/2×；波形必须保持对应源区间，静音不能清除它。预览与导出应保持原声只播放一次。远程 Chromium 缺 WebCodecs，实际 MP4 解码、视觉分层与导出仍为未验证。

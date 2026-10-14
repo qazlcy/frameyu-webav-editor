@@ -18,6 +18,8 @@ export interface VideoThumbnailData {
   frames: VideoThumbnail[];
 }
 
+export type MediaPreviewTask = Promise<WaveformData | VideoThumbnailData | undefined>;
+
 const nextIdlePeriod = () => new Promise<void>((resolve) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) window.requestIdleCallback(() => resolve(), { timeout: 250 });
   else setTimeout(resolve, 0);
@@ -93,9 +95,17 @@ export class TimelineMediaPreviewCache {
     this.analysisAssets.set(key, asset);
     this.importedAt.set(key, fileSelectedAt);
     this.waveformVersions.set(key, this.waveformVersions.get(key) ?? 0);
-    this.setWaveformStatus(asset, { phase: 'queued', attempt: 0, timings: {} }, '素材已进入分析队列');
+    this.setWaveformStatus(asset, { phase: 'unscheduled', attempt: 0, message: '素材已登记，等待本地文件与分析调度', timings: {} }, '素材已登记，尚未创建分析任务');
   }
   noteAudioImported(asset: Asset, fileSelectedAt: number) { this.noteWaveformAssetImported(asset, fileSelectedAt); }
+  /** Records why an Asset cannot be queued yet; a later scheduling pass may retry it. */
+  markWaveformUnscheduled(asset: Asset, message: string) {
+    const key = waveformKey(asset.type, asset.id);
+    const current = this.waveformStatus.get(key);
+    if (this.waveformTasks.has(key) || current?.phase === 'queued' || current?.phase === 'decoding' || current?.phase === 'sampling') return;
+    if (current?.phase === 'unscheduled' && current.message === message) return;
+    this.setWaveformStatus(asset, { phase: 'unscheduled', attempt: current?.attempt ?? 0, message, timings: current?.timings ?? {} }, message);
+  }
   getThumbnails(assetId: string | undefined) { return assetId ? this.thumbnails.get(assetId) : undefined; }
 
   ensureWaveform(asset: Asset, file: File): Promise<WaveformData> {
@@ -112,6 +122,7 @@ export class TimelineMediaPreviewCache {
     const previous = this.waveformStatus.get(key);
     const attempt = Math.max(1, (previous?.attempt ?? 0) + 1);
     const timings: WaveformTiming = { importToTaskMs: queuedAt - (this.importedAt.get(key) ?? queuedAt) };
+    this.log(asset, 'analysis-requested', '已收到独立音频波形分析请求', timings);
     this.setWaveformStatus(asset, { phase: 'queued', attempt, timings }, `任务已创建，等待第 ${this.waveformQueue.pendingCount + 1} 个分析槽位`);
     const task = this.waveformQueue.enqueue(() => this.loadWaveform(asset, file, key, version, queuedAt, attempt, timings)).then((data) => {
       if (this.isCurrent(key, version)) this.waveformErrors.delete(key);
@@ -137,6 +148,7 @@ export class TimelineMediaPreviewCache {
     const previous = this.waveformStatus.get(key);
     const attempt = Math.max(1, (previous?.attempt ?? 0) + 1);
     const timings: WaveformTiming = { importToTaskMs: queuedAt - (this.importedAt.get(key) ?? queuedAt) };
+    this.log(asset, 'analysis-requested', '已收到视频原声音频分析请求', timings);
     this.setWaveformStatus(asset, { phase: 'queued', attempt, timings }, `视频原声音频任务已创建，等待第 ${this.waveformQueue.pendingCount + 1} 个分析槽位`);
     const task = this.waveformQueue.enqueue(() => this.loadVideoWaveform(asset, file, key, version, queuedAt, attempt, timings)).then((data) => {
       if (this.isCurrent(key, version)) this.waveformErrors.delete(key);
@@ -363,7 +375,7 @@ export class TimelineMediaPreviewCache {
   private setWaveformStatus(asset: Asset, status: WaveformAnalysisStatus, message: string) {
     if (this.disposed) return;
     const key = waveformKey(asset.type, asset.id);
-    this.waveformStatus.set(key, { ...status, timings: { ...status.timings } });
+    this.waveformStatus.set(key, { ...status, message, timings: { ...status.timings } });
     if (status.phase === 'failed' && status.error) this.waveformErrors.set(key, status.error);
     this.log(asset, status.phase, message, status.timings);
     for (const listener of this.listeners) listener(asset);
@@ -383,4 +395,26 @@ export class TimelineMediaPreviewCache {
     this.diagnostics.push(entry);
     if (this.diagnostics.length > 200) this.diagnostics.splice(0, this.diagnostics.length - 200);
   }
+}
+
+/**
+ * Runs after both project state and the runtime File registry have settled. The registry lives
+ * outside serialisable Project data, so a later File registration must be able to schedule an
+ * already-present Asset instead of leaving its card in a misleading pending state.
+ */
+export function scheduleMediaPreviewAnalysis(cache: TimelineMediaPreviewCache, assets: readonly Asset[], getFile: (assetId: string) => File | undefined): MediaPreviewTask[] {
+  const tasks: MediaPreviewTask[] = [];
+  for (const asset of assets) {
+    const file = getFile(asset.id);
+    if (!file) {
+      cache.markWaveformUnscheduled(asset, '尚未调度：本地文件引用尚未准备好，将在资源注册后重试');
+      continue;
+    }
+    if (asset.type === 'audio') tasks.push(cache.ensureWaveform(asset, file));
+    else {
+      tasks.push(cache.ensureThumbnails(asset, file));
+      tasks.push(cache.ensureVideoWaveform(asset, file));
+    }
+  }
+  return tasks;
 }

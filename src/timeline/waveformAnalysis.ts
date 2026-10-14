@@ -1,4 +1,4 @@
-export type WaveformAnalysisPhase = 'queued' | 'decoding' | 'sampling' | 'ready' | 'failed' | 'no-audio';
+export type WaveformAnalysisPhase = 'unscheduled' | 'queued' | 'decoding' | 'sampling' | 'ready' | 'failed' | 'no-audio';
 
 export interface WaveformTiming {
   importToTaskMs?: number;
@@ -17,6 +17,7 @@ export interface WaveformTiming {
 export interface WaveformAnalysisStatus {
   phase: WaveformAnalysisPhase;
   attempt: number;
+  message?: string;
   error?: string;
   timings: WaveformTiming;
 }

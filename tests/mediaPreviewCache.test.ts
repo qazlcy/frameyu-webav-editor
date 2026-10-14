@@ -44,7 +44,7 @@ vi.mock('@webav/av-cliper', () => ({
   },
 }));
 
-import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformRange, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
+import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformRange, scheduleMediaPreviewAnalysis, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
 import { TimelineMediaPreviewCache } from '../src/timeline/mediaPreviewCache';
 import type { TimelineClip } from '../src/editor/types';
 import type { Asset } from '../src/editor/types';
@@ -119,6 +119,28 @@ describe('timeline media preview calculations', () => {
     waveformMock.fail = false;
     await expect(cache.retryWaveform(failingAsset, file)).resolves.toMatchObject({ peaks: [0, 0.25, 0.5, 1] });
     expect(cache.getWaveformStatus(failingAsset.id)?.phase).toBe('ready');
+    cache.dispose();
+  });
+
+  it('keeps an Asset explicitly unscheduled until its runtime File arrives, then creates one visible analysis task', async () => {
+    const cache = new TimelineMediaPreviewCache();
+    const asset: Asset = { id: 'late-file', name: 'late.mp3', type: 'audio', audioKind: 'music', mimeType: 'audio/mpeg', durationMs: 1000 };
+    const files = new Map<string, File>();
+    cache.noteAudioImported(asset, performance.now());
+    expect(cache.getWaveformStatus(asset.id)?.phase).toBe('unscheduled');
+    expect(scheduleMediaPreviewAnalysis(cache, [asset], (assetId) => files.get(assetId))).toHaveLength(0);
+    expect(cache.getWaveformStatus(asset.id)?.message).toContain('本地文件引用');
+    expect(cache.getWaveformDiagnostics().some((entry) => entry.phase === 'unscheduled')).toBe(true);
+
+    waveformMock.calls = 0;
+    waveformMock.fail = false;
+    files.set(asset.id, new File(['audio'], 'late.mp3', { type: 'audio/mpeg' }));
+    const tasks = scheduleMediaPreviewAnalysis(cache, [asset], (assetId) => files.get(assetId));
+    expect(tasks).toHaveLength(1);
+    await expect(tasks[0]).resolves.toMatchObject({ peaks: [0, 0.25, 0.5, 1] });
+    expect(waveformMock.calls).toBe(1);
+    expect(cache.getWaveformDiagnostics().some((entry) => entry.phase === 'analysis-requested')).toBe(true);
+    expect(cache.getWaveformStatus(asset.id)?.phase).toBe('ready');
     cache.dispose();
   });
 

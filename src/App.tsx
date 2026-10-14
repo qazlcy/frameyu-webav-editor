@@ -4,7 +4,7 @@ import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type Edito
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, getClipSourceDurationMs, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
-import { sampleThumbnailsForClip, sampleWaveformRange, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
+import { sampleThumbnailsForClip, sampleWaveformRange, scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
@@ -46,6 +46,7 @@ export default function App() {
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const assetFilesRef = useRef(new Map<string, File>());
   const timelinePreviewCacheRef = useRef(new TimelineMediaPreviewCache());
+  const cacheDisposeTimerRef = useRef<number>();
   const adapterRef = useRef<WebAVAdapter>();
   const durationRef = useRef(0);
   const projectRef = useRef<Project>(emptyProject());
@@ -65,6 +66,7 @@ export default function App() {
   const [captionDraft, setCaptionDraft] = useState<CaptionDraft>({ text: '', startMs: 0, endMs: 3000 });
   const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
   const [timelinePreviewVersion, setTimelinePreviewVersion] = useState(0);
+  const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
 
   projectRef.current = project;
@@ -92,6 +94,10 @@ export default function App() {
   const mediaProject = useMemo(() => project, [mediaSignature]);
 
   useEffect(() => {
+    if (cacheDisposeTimerRef.current !== undefined) {
+      window.clearTimeout(cacheDisposeTimerRef.current);
+      cacheDisposeTimerRef.current = undefined;
+    }
     const adapter = new WebAVAdapter();
     adapterRef.current = adapter;
     if (previewRef.current) {
@@ -114,7 +120,12 @@ export default function App() {
       audioPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       audioPreviewUrlsRef.current.clear();
       assetFilesRef.current.clear();
-      timelinePreviewCacheRef.current.dispose();
+      // React 18 StrictMode intentionally runs effect cleanup/setup once in development.
+      // Defer disposal so the immediate setup cancels it; a real unmount still releases media.
+      cacheDisposeTimerRef.current = window.setTimeout(() => {
+        timelinePreviewCacheRef.current.dispose();
+        cacheDisposeTimerRef.current = undefined;
+      }, 0);
     };
   }, []);
 
@@ -126,21 +137,15 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    for (const asset of project.assets) {
-      const file = assetFilesRef.current.get(asset.id);
-      if (!file) continue;
-      const tasks = asset.type === 'audio'
-        ? [timelinePreviewCacheRef.current.ensureWaveform(asset, file)]
-        : [timelinePreviewCacheRef.current.ensureThumbnails(asset, file), timelinePreviewCacheRef.current.ensureVideoWaveform(asset, file)];
-      for (const task of tasks) void task.then(() => {
-        if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
-      }).catch((error: unknown) => {
-        console.warn('[WebAV] timeline media preview unavailable', asset.name, error);
-        if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
-      });
-    }
+    const tasks = scheduleMediaPreviewAnalysis(timelinePreviewCacheRef.current, project.assets, (assetId) => assetFilesRef.current.get(assetId));
+    for (const task of tasks) void task.then(() => {
+      if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
+    }).catch((error: unknown) => {
+      console.warn('[WebAV] timeline media preview unavailable', error);
+      if (!cancelled) setTimelinePreviewVersion((version) => version + 1);
+    });
     return () => { cancelled = true; };
-  }, [project.assets]);
+  }, [project.assets, runtimeAssetVersion]);
 
   useEffect(() => {
     if (!adapterReady || !projectDuration) return;
@@ -204,6 +209,7 @@ export default function App() {
       const asset: Asset = { id: makeId('video'), name: file.name, type: 'video', mimeType: file.type, ...info };
       adapterRef.current!.registerAsset(asset, file);
       assetFilesRef.current.set(asset.id, file);
+      setRuntimeAssetVersion((version) => version + 1);
       timelinePreviewCacheRef.current.noteWaveformAssetImported(asset, fileSelectedAt);
       setProject((previous) => {
         const firstVideo = !previous.assets.some((item) => item.type === 'video');
@@ -225,6 +231,7 @@ export default function App() {
       const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, ...info };
       adapterRef.current!.registerAsset(asset, file);
       assetFilesRef.current.set(asset.id, file);
+      setRuntimeAssetVersion((version) => version + 1);
       audioPreviewUrlsRef.current.set(asset.id, URL.createObjectURL(file));
       timelinePreviewCacheRef.current.noteAudioImported(asset, fileSelectedAt);
       setProject((previous) => ({ ...previous, assets: [...previous.assets, asset] }));
@@ -657,11 +664,11 @@ function MaterialAssetCard({ asset, previewUrl, projectDuration, analysisStatus,
   const audioKind = asset.audioKind ?? 'music';
   const kindLabel = asset.type === 'video' ? '视频' : audioKind === 'music' ? '音乐' : '音效';
   const resolution = asset.type === 'video' && asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : '';
-  const analysisLabel = analysisStatus?.phase === 'queued' ? '等待分析' : analysisStatus?.phase === 'decoding' ? '正在解码' : analysisStatus?.phase === 'sampling' ? '正在生成波形' : analysisStatus?.phase === 'ready' ? '波形分析完成' : analysisStatus?.phase === 'no-audio' ? '无音轨' : analysisStatus?.phase === 'failed' ? '波形分析失败' : '等待分析';
+  const analysisLabel = analysisStatus?.phase === 'queued' ? '等待分析' : analysisStatus?.phase === 'decoding' ? '正在解码' : analysisStatus?.phase === 'sampling' ? '正在生成波形' : analysisStatus?.phase === 'ready' ? '波形分析完成' : analysisStatus?.phase === 'no-audio' ? '无音轨' : analysisStatus?.phase === 'failed' ? '波形分析失败' : '尚未调度';
   return <article className={`asset-card ${asset.type === 'video' ? 'video' : audioKind}`}>
     <span className="asset-icon" aria-hidden="true">{asset.type === 'video' ? '▣' : audioKind === 'music' ? '♫' : '✦'}</span>
     <div className="asset-card-body"><b title={asset.name}>{asset.name}</b><small>{kindLabel} · {formatTime(asset.durationMs)}{resolution}</small>
-      <div className={`waveform-analysis-status ${analysisStatus?.phase ?? 'queued'}`} aria-label={`${asset.name}波形${analysisLabel}`}><span>{analysisStatus?.phase === 'decoding' || analysisStatus?.phase === 'sampling' ? '◌ ' : ''}{analysisLabel}</span>{analysisStatus?.phase === 'failed' && <><small title={analysisStatus.error}>原因：{analysisStatus.error || '未知错误'}</small><button className="secondary" onClick={onRetryWaveform}>重新分析</button></>}</div>
+      <div className={`waveform-analysis-status ${analysisStatus?.phase ?? 'unscheduled'}`} aria-label={`${asset.name}波形${analysisLabel}`}><span>{analysisStatus?.phase === 'decoding' || analysisStatus?.phase === 'sampling' ? '◌ ' : ''}{analysisLabel}</span>{analysisStatus?.phase === 'unscheduled' && <small title={analysisStatus.message}>{analysisStatus.message || '尚未收到分析请求。'}</small>}{analysisStatus?.phase === 'failed' && <><small title={analysisStatus.error}>原因：{analysisStatus.error || '未知错误'}</small><button className="secondary" onClick={onRetryWaveform}>重新分析</button></>}</div>
       {asset.type === 'video' ? <button onClick={onAddVideo}>+ 视频轨</button> : <><div className="asset-card-actions"><button onClick={() => onAddAudio(audioKind)}>+ {audioKind === 'music' ? '音乐' : '音效'}</button><button className="secondary" onClick={() => onAddAudio(audioKind === 'music' ? 'sfx' : 'music')}>作为{audioKind === 'music' ? '音效' : '音乐'}</button></div>{previewUrl ? <audio aria-label={`试听 ${asset.name}`} controls preload="metadata" src={previewUrl} /> : <small className="audio-unavailable">本会话未保留试听源</small>}</>}
     </div>
   </article>;
@@ -689,7 +696,12 @@ function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip;
   const clipWidthPx = Math.max(18, clip.durationMs / 1000 * zoom);
   if (clip.type === 'audio') {
     const waveform = cache.getWaveform(clip.assetId);
-    if (!waveform) return <div className={`audio-waveform-placeholder ${cache.getWaveformError(clip.assetId) ? 'failed' : ''}`} aria-label={cache.getWaveformError(clip.assetId) ? '音频波形分析失败' : '正在分析音频波形'}>{cache.getWaveformError(clip.assetId) ? '波形不可用' : '分析波形…'}</div>;
+    const error = cache.getWaveformError(clip.assetId);
+    const status = cache.getWaveformStatus(clip.assetId);
+    if (!waveform) {
+      const label = error ? '波形不可用' : status?.phase === 'unscheduled' ? '尚未调度波形' : status?.phase === 'queued' ? '等待分析…' : status?.phase === 'decoding' ? '正在解码…' : status?.phase === 'sampling' ? '正在生成波形…' : '尚未调度波形';
+      return <div className={`audio-waveform-placeholder ${error ? 'failed' : ''}`} aria-label={error ? '音频波形分析失败' : label}>{label}</div>;
+    }
     const sourceDurationMs = getClipSourceDurationMs(clip);
     const peaks = sampleWaveformRange(waveform, clip.sourceStartMs, sourceDurationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3))));
     return <div className="audio-waveform" aria-label="音频波形" aria-hidden="true">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>;
