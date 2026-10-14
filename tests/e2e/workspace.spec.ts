@@ -88,3 +88,16 @@ test('keeps five material entry points and filters fixed above the independently
   await page.mouse.up();
   expect(await panel.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(290);
 });
+
+test('manages an additional empty video track without disturbing the existing timeline', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('.track')).toHaveCount(4);
+  await page.getByRole('button', { name: '+ 视频轨' }).click();
+  await expect(page.locator('.track')).toHaveCount(5);
+  const extraVideoName = page.getByLabel('视频 2名称');
+  await expect(extraVideoName).toBeVisible();
+  await extraVideoName.fill('画中画层');
+  await expect(page.getByLabel('画中画层名称')).toHaveValue('画中画层');
+  await page.getByRole('button', { name: '删除画中画层' }).click();
+  await expect(page.locator('.track')).toHaveCount(4);
+});

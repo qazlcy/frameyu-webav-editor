@@ -136,6 +136,22 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 
 未验证：远程无头 Chromium 不能完成 MP4/音频 WebCodecs 解码编码，因此本地音频试听、手动字幕实际画面，以及添加后的真实预览/MP4 导出均须在 Chrome/Edge 执行 README 第 5、6、12 项；它们不能因结构 E2E 通过而标为已验证。
 
+## Phase 5.2：多视频轨道与画中画叠加
+
+分支：`phase5-multivideo-overlay`，数据与 WebAV 基线提交：`e94efff`。本阶段未加入转场、遮罩、关键帧或 AI 能力。
+
+| 子阶段 | 结果 | 记录 |
+| --- | --- | --- |
+| 5.2.1 数据与命令层 | 通过（纯逻辑测试） | `addTrack` 支持视频轨；`appendVideoClip` 可指定视频轨并在该轨末尾追加；同轨才禁止重叠，跨视频轨允许重叠与移动。最后一条视频轨及任何非空轨都不能删除。`TimelineClip` 新增 `videoLayout` 与可选 `muted`。 |
+| 5.2.2 WebAV 图层处理 | 已实现 / 待真实媒体验收 | 每个视频片段拥有按 TimelineClip ID 管理的 `MP4Clip + VisibleSprite`。`videoLayout` 直接映射为 Sprite `rect`/`opacity`，轨道顺序映射为递增 zIndex；AVCanvas 源码已确认会在 Sprite `propsChange` 后按 zIndex 重排，Combinator 克隆同一 Sprite 状态输出。 |
+| 5.2.3 UI 交互 | 通过（工作台 E2E） | 可新增、重命名、排序、调整高度和删除空视频轨；片段可跨兼容视频轨移动。视频属性提供全画面、右上角画中画、X/Y、宽高、保持比例、透明度、原声音量/静音和恢复默认布局。预览覆盖层把 CSS 指针坐标换算到 1280×720 项目坐标，再写回 `videoLayout`。 |
+| 5.2.4 音频与导出回归 | 已实现 / 待真实媒体验收 | 读取 WebAV 1.2.8 源码确认 `MP4Clip(stream, { audio: { volume } })` 会将该视频原声 PCM 乘以音量；视频静音传入 0。每个视频仅创建一个含画面和原声的 Sprite，不额外创建 AudioClip，避免重复声音；背景音乐、音效与字幕仍走原有独立 Sprite。 |
+| 自动检查 | 通过 | `npm run typecheck`、Vitest（28 项）、`npm run build` 通过；工作台 Playwright 3 项通过。真实媒体导出 E2E 因远程 Chromium 缺完整 WebCodecs 而 skipped。 |
+
+图层规则：视频轨按 `Track.order` 从小到大对应 `zIndex 0…n`；数值较大的轨绘制在更上方。字幕固定为 `zIndex 10000`，因此始终位于所有视频之上。视频几何、透明度、静音与音量均属于工程快照；预览同步和 `export(project)` 都使用该同一快照。
+
+未验证：尚未能在远程浏览器实际解码两个带声视频并生成 MP4，因而视频 A/B 的重叠画面、真实混音、裁剪后原声、层级遮挡及导出可播放性必须由本地 Chrome/Edge 按 README 第 4～6、15 项确认，不能将逻辑/E2E 结果替代这些媒体结论。
+
 ## 第二阶段：本地 Chrome 验收清单
 
 1. 通过端口转发打开 `http://localhost:5173`，确认没有 WebCodecs 兼容性警告。

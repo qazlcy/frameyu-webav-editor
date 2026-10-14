@@ -200,8 +200,9 @@ export function updateVideoLayout(project: Project, clipId: string, patch: Parti
   const current = clip.videoLayout ?? defaultVideoLayout(project, asset);
   const next = { ...current, ...patch };
   const aspect = asset?.width && asset?.height ? asset.width / asset.height : current.width / current.height;
-  if (next.keepAspectRatio && patch.width !== undefined && patch.height === undefined) next.height = Math.round(next.width / aspect);
-  if (next.keepAspectRatio && patch.height !== undefined && patch.width === undefined) next.width = Math.round(next.height * aspect);
+  // Corner dragging supplies both dimensions; width is the canonical edge when aspect lock is on.
+  if (next.keepAspectRatio && patch.width !== undefined) next.height = Math.round(next.width / aspect);
+  else if (next.keepAspectRatio && patch.height !== undefined) next.width = Math.round(next.height * aspect);
   next.width = clamp(Math.round(next.width), 40, project.width);
   next.height = clamp(Math.round(next.height), 40, project.height);
   next.x = clamp(Math.round(next.x), 0, project.width - next.width);

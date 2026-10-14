@@ -170,6 +170,18 @@ describe('multi-video project commands', () => {
     expect(getVideoLayerZIndex(project, 'video')).toBe(1);
   });
 
+  it('keeps video layout in project canvas coordinates and preserves aspect ratio when resized', () => {
+    let project = addAsset(emptyProject(), video('a', 5000));
+    project = appendVideoClip(project, project.assets[0]);
+    const clipId = project.clips[0].id;
+    project = updateVideoLayout(project, clipId, { width: 320, mode: 'custom' });
+    expect(project.clips[0].videoLayout).toMatchObject({ mode: 'custom', width: 320, height: 180, x: 0, y: 0 });
+    project = updateVideoLayout(project, clipId, { width: 480, height: 999 });
+    expect(project.clips[0].videoLayout).toMatchObject({ width: 480, height: 270 });
+    project = updateVideoLayout(project, clipId, { x: 2000, y: 1000, opacity: 3 });
+    expect(project.clips[0].videoLayout).toMatchObject({ x: 800, y: 450, opacity: 1 });
+  });
+
   it('protects the final or non-empty video track from deletion', () => {
     let project = emptyProject();
     expect(deleteEmptyTrack(project, 'video')).toBe(project);
