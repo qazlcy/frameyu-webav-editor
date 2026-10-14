@@ -217,3 +217,19 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 5.5 倍速及其组合 | 倍率、分割、裁剪、重叠、叠加、缓存、字幕稳定性单测通过 | 本地 Chrome 待检查实际画面/原声、混音和 MP4 |
 
 未验证：远程无头 Chromium 仍不提供 `VideoDecoder`、`VideoEncoder`、`AudioDecoder`、`AudioEncoder`，因此不能把源码核查、命令测试或工作台 E2E 视为真实变速媒体通过。请在本地 Chrome/Edge 按 README 第 19、20 项验收：特别记录输入素材、速度档位、分割/裁剪位置、输出 MP4 时长、画面与原声同步，以及音调随速度变化的预期现象。
+
+## Phase 6.1：波形任务诊断、队列与错误反馈
+
+分支：`phase6-waveform-crop`，基线：`5def32c`。本阶段只改进独立音乐/音效的运行时波形分析；未改动 WebAV 合成、视频缩略图、视频原声波形或画面裁切。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 触发时机 | 已实现 | 保留既有“音频 Asset 加入 `project.assets` 后触发”语义。导入完成后，`noteAudioImported` 立即写入等待状态；随后既有 effect 调用 `ensureWaveform` 入队，不需要先创建时间轴片段。 |
+| 串行任务与去重 | 通过（单测） | 新增 `AnalysisTaskQueue`，完整 PCM 解码默认仅并发一项。既有 `waveformTasks` 与 Asset ID 缓存保留，同一素材的重复引用/重复请求返回同一个 Promise；失败不会阻塞后续任务，失败后可显式重新分析。 |
+| 状态与错误反馈 | 已实现 / 工作台待浏览器验收 | 音频素材卡显示等待、正在解码、正在生成波形、完成、失败；失败显示原始可理解原因，并提供“重新分析”。时间轴仍可在分析期间添加片段，随后由缓存通知自动刷新。 |
+| 分阶段性能日志 | 已实现 / 待本地实测 | `[WaveformAnalysis]` 日志与素材卡下方可展开、可复制的诊断面板记录 Asset ID、素材名、时长，以及导入到任务创建、排队、AudioClip 创建、`ready` 解码、PCM 获取、峰值计算、缓存、UI 通知、总耗时。远程环境缺完整 WebCodecs，不能据此编造真实音频耗时。 |
+| 主线程计算 | 已实现 / 待本地实测 | 保持最多 1200 个真实峰值，不复制 PCM；`buildWaveformPeaksAsync` 每 96 个桶让出一次主线程。是否主要受益于计算阶段需以 `readyMs` 和 `peakBuildMs` 的本地测量判断；若 `readyMs` 占主导，瓶颈仍是 WebAV 完整解码而非峰值循环。 |
+| 生命周期 | 已实现 | 每任务在 `finally` 中释放临时 `AudioClip` 与 PCM 引用；`forgetAsset` 通过版本号忽略无法中途取消的过期 WebCodecs 结果；编辑器卸载会释放队列和缓存。当前没有素材删除入口，因此该失效路径预留给后续素材管理。 |
+| 自动检查 | 通过 | `npm run typecheck`、Vitest 48/48、`npm run build` 通过。新增覆盖异步峰值等价性、串行队列、失败不阻塞、Asset 任务去重、缓存与失败重试。 |
+
+本地 Chrome/Edge 性能验收：依次导入约 10 秒 MP3、30～60 秒 WAV、约 3 分钟 MP3；每次展开素材列表的“波形诊断日志”并复制 JSON，记录 `readyMs`、`peakBuildMs`、`totalMs`。随后连续导入三条音频，确认卡片依次排队且页面仍可操作；将同一素材反复加入时间轴，确认不产生新的 `decode-ready` 条目。对不支持或损坏的文件确认失败文案和重试入口。真实 PCM 波形显示、实际解码耗时、内存峰值及卡顿情况均为本地浏览器待验证，不能标为远程通过。
