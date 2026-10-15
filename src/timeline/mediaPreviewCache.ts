@@ -474,10 +474,7 @@ export function scheduleMediaPreviewAnalysis(cache: TimelineMediaPreviewCache, a
       continue;
     }
     if (asset.type === 'audio') tasks.push(cache.ensureWaveform(asset, file));
-    else {
-      tasks.push(cache.ensureThumbnails(asset, file));
-      tasks.push(cache.ensureVideoWaveform(asset, file));
-    }
+    else tasks.push(cache.ensureVideoWaveform(asset, file));
   }
   return tasks;
 }

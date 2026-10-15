@@ -166,6 +166,19 @@ describe('timeline media preview calculations', () => {
     cache.dispose();
   });
 
+  it('schedules only video source-audio analysis and no longer starts timeline thumbnail extraction', async () => {
+    const cache = new TimelineMediaPreviewCache();
+    const asset: Asset = { id: 'video-waveform-only', name: 'voice.mp4', type: 'video', mimeType: 'video/mp4', durationMs: 200 };
+    const file = new File(['video'], 'voice.mp4', { type: 'video/mp4' });
+    Object.assign(waveformMock, { videoCalls: 0, videoSplitCalls: 0, videoTickCalls: 0, videoHasAudio: true, videoFail: false, videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0.1])], [new Float32Array([0.8])]] });
+    cache.noteWaveformAssetImported(asset, performance.now());
+    const tasks = scheduleMediaPreviewAnalysis(cache, [asset], () => file);
+    expect(tasks).toHaveLength(1);
+    await expect(tasks[0]).resolves.toMatchObject({ peaks: [expect.closeTo(0.1), expect.closeTo(0.8)] });
+    expect(waveformMock.videoCalls).toBe(2); // source MP4Clip plus its split audio MP4Clip; no thumbnails() clip
+    cache.dispose();
+  });
+
   it('streams an MP4 audio-only tick track into cached video peaks without decoding video frames', async () => {
     const cache = new TimelineMediaPreviewCache();
     const asset: Asset = { id: 'video-a', name: 'spoken.mp4', type: 'video', mimeType: 'video/mp4', durationMs: 200 };

@@ -281,3 +281,10 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 - 完成诊断新增 `envelope-summary`：包含 Asset、`audio:/video:` 缓存键、版本、素材时长、桶数、最大/平均 Peak、最大 RMS 与非零桶数；Canvas 首次绘制输出尺寸、DPR、可见区间、列数和振幅范围。
 - 修复前 `addAudioClip` 在没有视频时被 `normaliseToVideoDuration` 静默移除，App 却显示“已加入”；现在允许在首条视频前暂存音频，视频出现后才应用时长裁剪。目标轨使用最新 `projectRef` 查询，并记录 `[TimelineAdd]` 点击/工程更新事件。
 - 自动检查：Vitest 58/58 通过；`test:e2e:local-libs` 新增合成 Canvas 像素测试，通过 4 项、真实媒体合成 1 项因 WebCodecs 跳过。真实 MP3/MP4 视觉仍需本地 Chrome 验收。
+
+## Phase 6.2.1 提交 B：视频时间轴原声波形
+
+- `scheduleMediaPreviewAnalysis()` 对视频只创建 `ensureVideoWaveform()`；保留缩略图缓存 API 以便未来素材封面用途，但不再自动运行 `MP4Clip.thumbnails()`，避免导入时额外的视频帧解码。
+- 视频时间轴默认展示文件名和占据主要高度的浅蓝色原声 Canvas 波形；没有音轨时明确显示“无音轨”，分析中或失败时显示相应占位。视频静音仅影响预览/导出，不影响原始波形。
+- 继续使用 `sourceStartMs`、`sourceDurationMs` 和 `playbackRate` 的既有映射，不增加实际播放音轨，因此不会造成原声重复。
+- 自动回归新增“视频调度不启动缩略图任务”测试；真实视频原声波形及预览/导出仍待本地 Chrome 验收。
