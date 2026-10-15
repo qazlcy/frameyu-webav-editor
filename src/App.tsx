@@ -4,8 +4,9 @@ import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type Edito
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, getClipSourceDurationMs, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
-import { sampleThumbnailsForClip, sampleWaveformRange, scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
+import { sampleThumbnailsForClip, scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
+import { WaveformCanvas } from './timeline/WaveformCanvas';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
@@ -703,8 +704,8 @@ function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip;
       return <div className={`audio-waveform-placeholder ${error ? 'failed' : ''}`} aria-label={error ? '音频波形分析失败' : label}>{label}</div>;
     }
     const sourceDurationMs = getClipSourceDurationMs(clip);
-    const peaks = sampleWaveformRange(waveform, clip.sourceStartMs, sourceDurationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3))));
-    return <div className="audio-waveform" aria-label="音频波形" aria-hidden="true">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>;
+    const color = asset?.audioKind === 'sfx' ? '#f4b75a' : '#72e4cf';
+    return <WaveformCanvas className="audio-waveform" data={waveform} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color={color} />;
   }
   if (clip.type === 'video' && asset) {
     const thumbnails = cache.getThumbnails(clip.assetId);
@@ -712,8 +713,7 @@ function TimelineClipPreview({ clip, asset, cache, zoom }: { clip: TimelineClip;
     if (!thumbnails && !waveform) return null;
     const sourceDurationMs = getClipSourceDurationMs(clip);
     const frames = thumbnails ? sampleThumbnailsForClip(thumbnails, clip, Math.min(16, Math.max(1, Math.ceil(clipWidthPx / 84)))) : [];
-    const peaks = waveform ? sampleWaveformRange(waveform, clip.sourceStartMs, sourceDurationMs, Math.min(180, Math.max(12, Math.ceil(clipWidthPx / 3)))) : [];
-    return <div className={`video-media-preview ${waveform ? 'has-waveform' : ''}`} aria-hidden="true">{frames.length > 0 && <div className="video-thumbnails" aria-label="视频缩略图">{frames.map((frame, index) => <img key={`${frame.timeMs}-${index}`} src={frame.url} draggable={false} alt="" />)}</div>}{peaks.length > 0 && <div className="video-audio-waveform" aria-label="视频原声波形">{peaks.map((peak, index) => <i key={index} style={{ height: `${Math.max(8, peak * 100)}%` }} />)}</div>}</div>;
+    return <div className={`video-media-preview ${waveform ? 'has-waveform' : ''}`} aria-hidden="true">{frames.length > 0 && <div className="video-thumbnails" aria-label="视频缩略图">{frames.map((frame, index) => <img key={`${frame.timeMs}-${index}`} src={frame.url} draggable={false} alt="" />)}</div>}{waveform && <WaveformCanvas className="video-audio-waveform" data={waveform} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color="#86bce5" compact />}</div>;
   }
   return null;
 }

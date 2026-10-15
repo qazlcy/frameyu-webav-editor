@@ -44,11 +44,11 @@ vi.mock('@webav/av-cliper', () => ({
   },
 }));
 
-import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformRange, scheduleMediaPreviewAnalysis, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
+import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformEnvelope, sampleWaveformRange, scheduleMediaPreviewAnalysis, waveformBucketCount, waveformVisualAmplitude, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
 import { TimelineMediaPreviewCache } from '../src/timeline/mediaPreviewCache';
 import type { TimelineClip } from '../src/editor/types';
 import type { Asset } from '../src/editor/types';
-import { AnalysisTaskQueue, buildWaveformPeaksAsync, StreamingWaveformPeakAccumulator } from '../src/timeline/waveformAnalysis';
+import { AnalysisTaskQueue, buildWaveformEnvelopeAsync, buildWaveformPeaksAsync, StreamingWaveformPeakAccumulator } from '../src/timeline/waveformAnalysis';
 
 const clip = (sourceStartMs: number, durationMs: number): TimelineClip => ({
   id: 'clip', trackId: 'music', type: 'audio', assetId: 'asset', name: 'asset', startMs: 0, sourceStartMs, durationMs, volume: 1,
@@ -67,6 +67,22 @@ describe('timeline media preview calculations', () => {
   it('keeps yielding peak analysis numerically identical to the compact cached envelope', async () => {
     const pcm = [new Float32Array([0, -0.2, 0.7, -1, 0.1, 0.3]), new Float32Array([0.1, 0.4, -0.3, 0.2, -0.8, 0])];
     await expect(buildWaveformPeaksAsync(pcm, 3, 1)).resolves.toEqual(buildWaveformPeaks(pcm, 3));
+  });
+
+  it('builds high-resolution peak and RMS envelopes without stereo phase cancellation', async () => {
+    const envelope = await buildWaveformEnvelopeAsync([new Float32Array([0.5, -0.25]), new Float32Array([-0.5, 0.25])], 2, 1);
+    expect(envelope.peaks).toEqual([0.5, 0.25]);
+    expect(envelope.rms).toEqual([0.5, 0.25]);
+    expect(envelope.sampleCounts).toEqual([2, 2]);
+    expect(waveformBucketCount(13_000)).toBe(2048);
+    expect(waveformBucketCount(180_000)).toBe(8192);
+  });
+
+  it('aggregates only the selected source window and keeps visual silence at zero', () => {
+    const data = { durationMs: 4000, peaks: [0, 0.1, 0.6, 1], rms: [0, 0.05, 0.3, 0.7], sampleCounts: [10, 10, 10, 10] };
+    expect(sampleWaveformEnvelope(data, 1000, 2000, 2)).toEqual([{ peak: 0.1, rms: 0.05, sampleCount: 10 }, { peak: 0.6, rms: 0.3, sampleCount: 10 }]);
+    expect(waveformVisualAmplitude(0, 0)).toBe(0);
+    expect(waveformVisualAmplitude(0.6, 0.3)).toBeGreaterThan(waveformVisualAmplitude(0.1, 0.05));
   });
 
   it('serialises complete analysis jobs so a second decode starts only after the first settles', async () => {

@@ -72,6 +72,37 @@ export class AnalysisTaskQueue {
 
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+export interface WaveformEnvelope {
+  peaks: number[];
+  rms: number[];
+  sampleCounts: number[];
+}
+
+/**
+ * Scans PCM once to preserve both transient peak and sustained RMS energy. Channels are never
+ * summed, so opposite-phase stereo samples cannot cancel each other out.
+ */
+export async function buildWaveformEnvelopeAsync(channels: Float32Array[], bucketCount: number, yieldEveryFrames = 16_384): Promise<WaveformEnvelope> {
+  const frameCount = Math.max(0, ...channels.map((channel) => channel.length));
+  if (!frameCount || !channels.length) return { peaks: [], rms: [], sampleCounts: [] };
+  const buckets = Math.max(1, Math.min(bucketCount, frameCount));
+  const peaks = Array.from({ length: buckets }, () => 0);
+  const sumSquares = Array.from({ length: buckets }, () => 0);
+  const sampleCounts = Array.from({ length: buckets }, () => 0);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const bucket = Math.min(buckets - 1, Math.floor(frame / frameCount * buckets));
+    for (const channel of channels) {
+      if (frame >= channel.length) continue;
+      const sample = channel[frame] ?? 0;
+      peaks[bucket] = Math.max(peaks[bucket] ?? 0, Math.abs(sample));
+      sumSquares[bucket] = (sumSquares[bucket] ?? 0) + sample * sample;
+      sampleCounts[bucket] = (sampleCounts[bucket] ?? 0) + 1;
+    }
+    if ((frame + 1) % yieldEveryFrames === 0 && frame + 1 < frameCount) await yieldToBrowser();
+  }
+  return { peaks, rms: sumSquares.map((sum, index) => Math.sqrt(sum / Math.max(1, sampleCounts[index] ?? 1))), sampleCounts };
+}
+
 /**
  * Identical peak values to the synchronous helper, but returns to the browser after a
  * bounded batch. It does not clone PCM and therefore does not increase decoded-audio RAM.
@@ -105,6 +136,8 @@ export function peakForBucket(channels: Float32Array[], frameCount: number, buck
  */
 export class StreamingWaveformPeakAccumulator {
   private readonly peaks: number[];
+  private readonly sumSquares: number[];
+  private readonly sampleCounts: number[];
   private processedFrames = 0;
 
   constructor(durationUs: number, sampleRate: number, bucketCount = 1200) {
@@ -112,6 +145,8 @@ export class StreamingWaveformPeakAccumulator {
     this.totalFrames = totalFrames;
     this.bucketCount = Math.max(1, Math.min(bucketCount, totalFrames));
     this.peaks = Array.from({ length: this.bucketCount }, () => 0);
+    this.sumSquares = Array.from({ length: this.bucketCount }, () => 0);
+    this.sampleCounts = Array.from({ length: this.bucketCount }, () => 0);
   }
 
   private readonly totalFrames: number;
@@ -122,11 +157,24 @@ export class StreamingWaveformPeakAccumulator {
     for (let frame = 0; frame < frameCount; frame += 1) {
       const bucket = Math.min(this.bucketCount - 1, Math.floor((this.processedFrames + frame) / this.totalFrames * this.bucketCount));
       let peak = this.peaks[bucket] ?? 0;
-      for (const channel of channels) peak = Math.max(peak, Math.abs(channel[frame] ?? 0));
+      for (const channel of channels) {
+        if (frame >= channel.length) continue;
+        const sample = channel[frame] ?? 0;
+        peak = Math.max(peak, Math.abs(sample));
+        this.sumSquares[bucket] = (this.sumSquares[bucket] ?? 0) + sample * sample;
+        this.sampleCounts[bucket] = (this.sampleCounts[bucket] ?? 0) + 1;
+      }
       this.peaks[bucket] = Math.min(1, peak);
     }
     this.processedFrames += frameCount;
   }
 
   finish() { return [...this.peaks]; }
+  finishEnvelope(): WaveformEnvelope {
+    return {
+      peaks: [...this.peaks],
+      rms: this.sumSquares.map((sum, index) => Math.sqrt(sum / Math.max(1, this.sampleCounts[index] ?? 1))),
+      sampleCounts: [...this.sampleCounts],
+    };
+  }
 }

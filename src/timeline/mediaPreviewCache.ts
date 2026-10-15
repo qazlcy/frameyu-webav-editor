@@ -1,11 +1,13 @@
 import { AudioClip, MP4Clip } from '@webav/av-cliper';
 import { getClipSourceDurationMs, msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, TimelineClip } from '../editor/types';
-import { AnalysisTaskQueue, buildWaveformPeaksAsync, peakForBucket, StreamingWaveformPeakAccumulator, type WaveformAnalysisStatus, type WaveformDiagnosticEntry, type WaveformTiming } from './waveformAnalysis';
+import { AnalysisTaskQueue, buildWaveformEnvelopeAsync, peakForBucket, StreamingWaveformPeakAccumulator, type WaveformAnalysisStatus, type WaveformDiagnosticEntry, type WaveformTiming } from './waveformAnalysis';
 
 export interface WaveformData {
   durationMs: number;
   peaks: number[];
+  rms?: number[];
+  sampleCounts?: number[];
 }
 
 export interface VideoThumbnail {
@@ -27,6 +29,9 @@ const nextIdlePeriod = () => new Promise<void>((resolve) => {
 const readableError = (error: unknown) => error instanceof Error ? error.message : String(error);
 const waveformKey = (type: 'audio' | 'video', assetId: string) => `${type}:${assetId}`;
 
+/** Bounded high-resolution source envelope: 6–22 ms per bucket for ordinary long-form media. */
+export const waveformBucketCount = (durationMs: number) => Math.min(8192, Math.max(2048, Math.ceil(Math.max(1, durationMs) / 8)));
+
 /** Reduces decoded multi-channel PCM to a compact, reusable peak envelope. */
 export function buildWaveformPeaks(channels: Float32Array[], bucketCount = 1200): number[] {
   const frameCount = Math.max(0, ...channels.map((channel) => channel.length));
@@ -44,6 +49,40 @@ export function sampleWaveformRange(data: WaveformData, sourceStartMs: number, d
     const peakIndex = Math.min(data.peaks.length - 1, Math.max(0, Math.floor(timeMs / data.durationMs * data.peaks.length)));
     return data.peaks[peakIndex] ?? 0;
   });
+}
+
+export interface WaveformColumn { peak: number; rms: number; sampleCount: number; }
+
+/** Aggregates only the source time range covered by a visible timeline clip; no PCM is revisited. */
+export function sampleWaveformEnvelope(data: WaveformData, sourceStartMs: number, durationMs: number, columnCount: number): WaveformColumn[] {
+  if (!data.peaks.length || !data.durationMs || durationMs <= 0) return [];
+  const columns = Math.max(1, columnCount);
+  const sourceEndMs = Math.min(data.durationMs, Math.max(sourceStartMs, sourceStartMs + durationMs));
+  const sourceStart = Math.max(0, Math.min(sourceStartMs, data.durationMs));
+  const rms = data.rms ?? data.peaks;
+  const counts = data.sampleCounts;
+  return Array.from({ length: columns }, (_, column) => {
+    const fromMs = sourceStart + (sourceEndMs - sourceStart) * column / columns;
+    const toMs = sourceStart + (sourceEndMs - sourceStart) * (column + 1) / columns;
+    const first = Math.max(0, Math.floor(fromMs / data.durationMs * data.peaks.length));
+    const last = Math.min(data.peaks.length - 1, Math.max(first, Math.ceil(toMs / data.durationMs * data.peaks.length) - 1));
+    let peak = 0;
+    let squareSum = 0;
+    let sampleCount = 0;
+    for (let index = first; index <= last; index += 1) {
+      peak = Math.max(peak, data.peaks[index] ?? 0);
+      const count = counts?.[index] ?? 1;
+      squareSum += (rms[index] ?? 0) ** 2 * count;
+      sampleCount += count;
+    }
+    return { peak, rms: Math.sqrt(squareSum / Math.max(1, sampleCount)), sampleCount };
+  });
+}
+
+/** Visual-only gain preserves zero and relative ordering without changing source audio or export. */
+export function waveformVisualAmplitude(peak: number, rms: number) {
+  const energy = Math.max(0, Math.max(peak * 0.46, rms * 1.08));
+  return energy === 0 ? 0 : Math.min(1, Math.pow(energy, 0.68) * 0.94);
 }
 
 /** Selects cached source frames for exactly the source window used by a video clip. */
@@ -249,15 +288,15 @@ export class TimelineMediaPreviewCache {
       this.setWaveformStatus(asset, { phase, attempt, timings }, '正在生成峰值波形');
       this.log(asset, 'pcm-read', `已获取 ${pcm.length} 个 PCM 声道（${timings.pcmReadMs.toFixed(1)} ms）`, timings);
       const peakStartedAt = performance.now();
-      const peaks = await buildWaveformPeaksAsync(pcm);
+      const envelope = await buildWaveformEnvelopeAsync(pcm, waveformBucketCount(asset.durationMs));
       timings.peakBuildMs = performance.now() - peakStartedAt;
       this.log(asset, 'peak-built', `峰值降采样完成（${timings.peakBuildMs.toFixed(1)} ms）`, timings);
       const cacheStartedAt = performance.now();
-      const data: WaveformData = { durationMs: asset.durationMs, peaks };
+      const data: WaveformData = { durationMs: asset.durationMs, ...envelope };
       if (this.isCurrent(key, version)) this.waveforms.set(key, data);
       timings.cacheWriteMs = performance.now() - cacheStartedAt;
       timings.totalMs = performance.now() - queuedAt;
-      if (this.isCurrent(key, version)) this.setWaveformStatus(asset, { phase: 'ready', attempt, timings }, `分析完成，共 ${peaks.length} 个峰值`);
+      if (this.isCurrent(key, version)) this.setWaveformStatus(asset, { phase: 'ready', attempt, timings }, `分析完成，共 ${envelope.peaks.length} 个峰值/RMS 桶`);
       this.log(asset, 'cached', `波形已缓存，总耗时 ${timings.totalMs.toFixed(1)} ms`, timings);
       return data;
     } catch (error) {
@@ -313,7 +352,7 @@ export class TimelineMediaPreviewCache {
       // The split track has no video samples, so its tick() never invokes VideoDecoder.
       phase = 'sampling';
       this.setWaveformStatus(asset, { phase, attempt, timings }, '正在解码视频原声并生成波形');
-      const accumulator = new StreamingWaveformPeakAccumulator(audioTrack.meta.duration, audioTrack.meta.audioSampleRate);
+      const accumulator = new StreamingWaveformPeakAccumulator(audioTrack.meta.duration, audioTrack.meta.audioSampleRate, waveformBucketCount(asset.durationMs));
       const tickStartedAt = performance.now();
       const tickStepUs = 100_000;
       for (let timeUs = tickStepUs; timeUs <= audioTrack.meta.duration; timeUs += tickStepUs) {
@@ -329,14 +368,14 @@ export class TimelineMediaPreviewCache {
       this.log(asset, 'video-audio-decoded', `音轨连续 PCM 已读取（${timings.audioTickMs.toFixed(1)} ms）`, timings);
 
       const peakStartedAt = performance.now();
-      const peaks = accumulator.finish();
+      const envelope = accumulator.finishEnvelope();
       timings.peakBuildMs = performance.now() - peakStartedAt;
       const cacheStartedAt = performance.now();
-      const data: WaveformData = { durationMs: asset.durationMs, peaks };
+      const data: WaveformData = { durationMs: asset.durationMs, ...envelope };
       if (this.isCurrent(key, version)) this.waveforms.set(key, data);
       timings.cacheWriteMs = performance.now() - cacheStartedAt;
       timings.totalMs = performance.now() - queuedAt;
-      if (this.isCurrent(key, version)) this.setWaveformStatus(asset, { phase: 'ready', attempt, timings }, `视频原声波形完成，共 ${peaks.length} 个峰值`);
+      if (this.isCurrent(key, version)) this.setWaveformStatus(asset, { phase: 'ready', attempt, timings }, `视频原声波形完成，共 ${envelope.peaks.length} 个峰值/RMS 桶`);
       this.log(asset, 'video-waveform-cached', `视频原声波形已缓存，总耗时 ${timings.totalMs.toFixed(1)} ms`, timings);
       return data;
     } catch (error) {

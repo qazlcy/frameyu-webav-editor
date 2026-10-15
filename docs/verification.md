@@ -228,7 +228,7 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 串行任务与去重 | 通过（单测） | 新增 `AnalysisTaskQueue`，完整 PCM 解码默认仅并发一项。既有 `waveformTasks` 与 Asset ID 缓存保留，同一素材的重复引用/重复请求返回同一个 Promise；失败不会阻塞后续任务，失败后可显式重新分析。 |
 | 状态与错误反馈 | 已实现 / 工作台待浏览器验收 | 音频素材卡显示等待、正在解码、正在生成波形、完成、失败；失败显示原始可理解原因，并提供“重新分析”。时间轴仍可在分析期间添加片段，随后由缓存通知自动刷新。 |
 | 分阶段性能日志 | 已实现 / 待本地实测 | `[WaveformAnalysis]` 日志与素材卡下方可展开、可复制的诊断面板记录 Asset ID、素材名、时长，以及导入到任务创建、排队、AudioClip 创建、`ready` 解码、PCM 获取、峰值计算、缓存、UI 通知、总耗时。远程环境缺完整 WebCodecs，不能据此编造真实音频耗时。 |
-| 主线程计算 | 已实现 / 待本地实测 | 保持最多 1200 个真实峰值，不复制 PCM；`buildWaveformPeaksAsync` 每 96 个桶让出一次主线程。是否主要受益于计算阶段需以 `readyMs` 和 `peakBuildMs` 的本地测量判断；若 `readyMs` 占主导，瓶颈仍是 WebAV 完整解码而非峰值循环。 |
+| 主线程计算 | 已实现 / 待本地实测 | 保持不复制 PCM 的分块计算；是否主要受益于计算阶段需以 `readyMs` 和 `peakBuildMs` 的本地测量判断；若 `readyMs` 占主导，瓶颈仍是 WebAV 完整解码而非峰值循环。 |
 | 生命周期 | 已实现 | 每任务在 `finally` 中释放临时 `AudioClip` 与 PCM 引用；`forgetAsset` 通过版本号忽略无法中途取消的过期 WebCodecs 结果；编辑器卸载会释放队列和缓存。当前没有素材删除入口，因此该失效路径预留给后续素材管理。 |
 | 自动检查 | 通过 | `npm run typecheck`、Vitest 48/48、`npm run build` 通过。新增覆盖异步峰值等价性、串行队列、失败不阻塞、Asset 任务去重、缓存与失败重试。 |
 
@@ -259,3 +259,17 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 - 自动回归：`npm run typecheck`、Vitest 54/54、`npm run build` 通过。新增“先 Asset 后 File”时序用例，验证补调度、可见诊断、缓存写入和单次解码。
 
 本地 Chrome/Edge 验收：导入有明显说话声的 MP4、带背景音乐的 MP4、无音轨 MP4、静音 MP4；检查素材卡状态、视频片段上下分层显示及诊断字段 `trackSplitMs`、`audioTickMs`。随后测试左/右裁剪、分割、同源重复引用、跨轨、静音及 0.5×/2×；波形必须保持对应源区间，静音不能清除它。预览与导出应保持原声只播放一次。远程 Chromium 缺 WebCodecs，实际 MP4 解码、视觉分层与导出仍为未验证。
+
+## 波形视觉与分辨率优化
+
+分支：`phase6-waveform-visuals`，基线：`4d97e1b`。本阶段不改变 PCM 解码队列、WebAV 预览或导出；只更换缓存包络表达和时间轴绘制。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| 绘制器 | 已实现 / 待本地视觉验收 | 原 DOM 竖线改为 Canvas 2D 对称填充包络。Canvas 使用 `ResizeObserver`、`IntersectionObserver`、滚动帧调度与 `requestAnimationFrame`，按 devicePixelRatio 绘制；屏幕外片段不绘制，超长片段 backing store 限制为 4096 px，且 `pointer-events: none`，不会遮挡片段移动、裁剪和分割。 |
+| 缓存分辨率 | 通过（单测） | 缓存从固定 1200 Peak 桶扩展为有界的 Peak+RMS+样本数：最少 2048、最多 8192 桶，长素材仍有上界。时间轴按可见片段的源区间和像素列聚合缓存，不会重新读取 PCM。 |
+| 声道与振幅 | 通过（单测） | Peak 取跨声道最大绝对值，RMS 按各声道平方能量合并，避免相位抵消。视觉增益仅作用于 Canvas，高度为有效区域约 80%，零振幅仍保持为零，分割片段不单独归一化。 |
+| 图层与颜色 | 已实现 | 音乐青绿色、音效琥珀色、视频原声低对比浅蓝；视频保持上缩略图、下紧凑波形。片段标签和裁剪手柄位于波形上层，选中边框独立于波形颜色。 |
+| 自动检查 | 通过 | 新增 Peak+RMS、立体声反相、源窗口聚合、静音与有界分辨率测试；`npm run typecheck`、Vitest 56/56、`npm run build` 通过。 |
+
+本地 Chrome/Edge 视觉验收：使用相同 `webav-44.1kHz-2chan.mp3` 截取优化前后截图；在 45/100/240 缩放及低/高轨高下检查连续对称填充包络、静音零线、弱音细节和强弱顺序。再检查带淡入淡出音频、视频原声、裁剪、分割、跨轨、倍速和同源多引用；这些操作必须仅重采样缓存而不生成新的 `decode-ready` 诊断条目。远程无头 Chromium 缺完整 WebCodecs，不能据此标记真实媒体视觉或导出为已验证。
