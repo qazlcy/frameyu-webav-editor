@@ -49,6 +49,7 @@ import { TimelineMediaPreviewCache } from '../src/timeline/mediaPreviewCache';
 import type { TimelineClip } from '../src/editor/types';
 import type { Asset } from '../src/editor/types';
 import { AnalysisTaskQueue, buildWaveformEnvelopeAsync, buildWaveformPeaksAsync, StreamingWaveformPeakAccumulator } from '../src/timeline/waveformAnalysis';
+import { mapWaveformDisplayAmplitude, normaliseWaveformDisplaySettings, waveformReferencePeak } from '../src/timeline/waveformDisplay';
 
 const clip = (sourceStartMs: number, durationMs: number): TimelineClip => ({
   id: 'clip', trackId: 'music', type: 'audio', assetId: 'asset', name: 'asset', startMs: 0, sourceStartMs, durationMs, volume: 1,
@@ -87,8 +88,41 @@ describe('timeline media preview calculations', () => {
 
   it('reports non-zero envelope diagnostics that distinguish valid cached audio from silence', () => {
     expect(summariseWaveform({ durationMs: 1000, peaks: [0, 0.25, 1], rms: [0, 0.1, 0.5] })).toEqual({
-      bucketCount: 3, maxPeak: 1, averagePeak: expect.closeTo(0.4166666667), maxRms: 0.5, nonZeroPeakBuckets: 2,
+      bucketCount: 3, maxPeak: 1, averagePeak: expect.closeTo(0.4166666667), p10Peak: 0.05, p50Peak: 0.25, p90Peak: expect.closeTo(0.85), p95Peak: expect.closeTo(0.925), p99Peak: 0.985,
+      maxRms: 0.5, averageRms: expect.closeTo(0.2), nonZeroPeakBuckets: 2, nonZeroPeakRatio: expect.closeTo(2 / 3),
     });
+  });
+
+  it('maps visual waveform gain without inventing silence or changing a constant envelope into peaks', () => {
+    const reference = { maxPeak: 0.25, p95Peak: 0.25, p99Peak: 0.25 };
+    expect(mapWaveformDisplayAmplitude(0, 0, reference)).toEqual({ peak: 0, rms: 0 });
+    const first = mapWaveformDisplayAmplitude(.1, .08, reference, { mode: 'enhanced', gain: 1, contrast: 1 });
+    const second = mapWaveformDisplayAmplitude(.1, .08, reference, { mode: 'enhanced', gain: 1, contrast: 1 });
+    expect(first).toEqual(second);
+    expect(first.peak).toBeGreaterThan(first.rms);
+  });
+
+  it('keeps a rising source envelope visually ordered in both modes and bounds settings', () => {
+    const reference = { maxPeak: .4, p95Peak: .35, p99Peak: .4 };
+    const linear = [.02, .08, .22].map((peak) => mapWaveformDisplayAmplitude(peak, peak / 2, reference, { mode: 'linear', gain: 2, contrast: 1 }));
+    const enhanced = [.02, .08, .22].map((peak) => mapWaveformDisplayAmplitude(peak, peak / 2, reference, { mode: 'enhanced', gain: 1, contrast: 1.1 }));
+    expect(linear.map((value) => value.peak)).toEqual([...linear.map((value) => value.peak)].sort((left, right) => left - right));
+    expect(enhanced.map((value) => value.peak)).toEqual([...enhanced.map((value) => value.peak)].sort((left, right) => left - right));
+    expect(normaliseWaveformDisplaySettings({ gain: 20, contrast: 9 })).toMatchObject({ gain: 5, contrast: 1.6 });
+  });
+
+  it('uses robust P95/P99 reference so one extreme transient does not flatten the rest', () => {
+    const peaks = [...Array.from({ length: 99 }, () => .12), 1];
+    const summary = summariseWaveform({ durationMs: 1000, peaks, rms: peaks.map((value) => value / 2) });
+    expect(waveformReferencePeak(summary)).toBeLessThan(summary.maxPeak);
+    const normal = mapWaveformDisplayAmplitude(.12, .06, summary, { mode: 'enhanced', gain: 1, contrast: 1 });
+    expect(normal.peak).toBeGreaterThan(.8);
+  });
+
+  it('shares one visual reference across split source windows', () => {
+    const reference = { maxPeak: .8, p95Peak: .6, p99Peak: .75 };
+    const settings = { mode: 'enhanced' as const, gain: 1.2, contrast: 1.1 };
+    expect(mapWaveformDisplayAmplitude(.3, .2, reference, settings)).toEqual(mapWaveformDisplayAmplitude(.3, .2, reference, settings));
   });
 
   it('serialises complete analysis jobs so a second decode starts only after the first settles', async () => {

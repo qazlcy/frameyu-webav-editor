@@ -57,19 +57,44 @@ export interface WaveformSummary {
   bucketCount: number;
   maxPeak: number;
   averagePeak: number;
+  p10Peak: number;
+  p50Peak: number;
+  p90Peak: number;
+  p95Peak: number;
+  p99Peak: number;
   maxRms: number;
+  averageRms: number;
   nonZeroPeakBuckets: number;
+  nonZeroPeakRatio: number;
 }
+
+const quantile = (sortedValues: readonly number[], percentile: number) => {
+  if (!sortedValues.length) return 0;
+  const position = Math.min(1, Math.max(0, percentile)) * (sortedValues.length - 1);
+  const low = Math.floor(position);
+  const high = Math.ceil(position);
+  return sortedValues[low] + (sortedValues[high] - sortedValues[low]) * (position - low);
+};
 
 export function summariseWaveform(data: WaveformData): WaveformSummary {
   const rms = data.rms ?? data.peaks;
   const total = data.peaks.reduce((sum, peak) => sum + peak, 0);
+  const rmsTotal = rms.reduce((sum, value) => sum + value, 0);
+  const nonZeroPeakBuckets = data.peaks.filter((peak) => peak > 0).length;
+  const sortedPeaks = [...data.peaks].sort((left, right) => left - right);
   return {
     bucketCount: data.peaks.length,
     maxPeak: Math.max(0, ...data.peaks),
     averagePeak: data.peaks.length ? total / data.peaks.length : 0,
+    p10Peak: quantile(sortedPeaks, .1),
+    p50Peak: quantile(sortedPeaks, .5),
+    p90Peak: quantile(sortedPeaks, .9),
+    p95Peak: quantile(sortedPeaks, .95),
+    p99Peak: quantile(sortedPeaks, .99),
     maxRms: Math.max(0, ...rms),
-    nonZeroPeakBuckets: data.peaks.filter((peak) => peak > 0).length,
+    averageRms: rms.length ? rmsTotal / rms.length : 0,
+    nonZeroPeakBuckets,
+    nonZeroPeakRatio: data.peaks.length ? nonZeroPeakBuckets / data.peaks.length : 0,
   };
 }
 
@@ -122,6 +147,8 @@ export function sampleThumbnailsForClip(data: VideoThumbnailData, clip: Timeline
  */
 export class TimelineMediaPreviewCache {
   private waveforms = new Map<string, WaveformData>();
+  /** Cached diagnostics are also the stable display reference shared by every clip of an Asset. */
+  private waveformSummaries = new Map<string, WaveformSummary>();
   private thumbnails = new Map<string, VideoThumbnailData>();
   private waveformTasks = new Map<string, Promise<WaveformData | undefined>>();
   private thumbnailTasks = new Map<string, Promise<VideoThumbnailData>>();
@@ -137,6 +164,8 @@ export class TimelineMediaPreviewCache {
 
   getWaveform(assetId: string | undefined) { return assetId ? this.waveforms.get(waveformKey('audio', assetId)) : undefined; }
   getVideoWaveform(assetId: string | undefined) { return assetId ? this.waveforms.get(waveformKey('video', assetId)) : undefined; }
+  getWaveformSummary(assetId: string | undefined) { return assetId ? this.waveformSummaries.get(waveformKey('audio', assetId)) : undefined; }
+  getVideoWaveformSummary(assetId: string | undefined) { return assetId ? this.waveformSummaries.get(waveformKey('video', assetId)) : undefined; }
   getWaveformError(assetId: string | undefined, type: 'audio' | 'video' = 'audio') { return assetId ? this.waveformErrors.get(waveformKey(type, assetId)) : undefined; }
   getWaveformStatus(assetId: string | undefined, type: 'audio' | 'video' = 'audio') {
     const status = assetId ? this.waveformStatus.get(waveformKey(type, assetId)) : undefined;
@@ -225,6 +254,7 @@ export class TimelineMediaPreviewCache {
     const pending = this.waveformTasks.get(key);
     if (pending) return pending;
     this.waveforms.delete(key);
+    this.waveformSummaries.delete(key);
     this.waveformErrors.delete(key);
     this.waveformVersions.set(key, (this.waveformVersions.get(key) ?? 0) + 1);
     this.setWaveformStatus(asset, { phase: 'queued', attempt: this.waveformStatus.get(key)?.attempt ?? 0, timings: {} }, '用户请求重新分析视频原声');
@@ -236,6 +266,7 @@ export class TimelineMediaPreviewCache {
     const pending = this.waveformTasks.get(key);
     if (pending) return pending;
     this.waveforms.delete(key);
+    this.waveformSummaries.delete(key);
     this.waveformErrors.delete(key);
     this.waveformVersions.set(key, (this.waveformVersions.get(key) ?? 0) + 1);
     this.setWaveformStatus(asset, { phase: 'queued', attempt: this.waveformStatus.get(key)?.attempt ?? 0, timings: {} }, '用户请求重新分析');
@@ -247,6 +278,7 @@ export class TimelineMediaPreviewCache {
     const key = waveformKey(type, assetId);
     this.waveformVersions.set(key, (this.waveformVersions.get(key) ?? 0) + 1);
     this.waveforms.delete(key);
+    this.waveformSummaries.delete(key);
     this.waveformErrors.delete(key);
     this.waveformStatus.delete(key);
     this.importedAt.delete(key);
@@ -277,6 +309,7 @@ export class TimelineMediaPreviewCache {
     this.waveformQueue.dispose();
     for (const data of this.thumbnails.values()) for (const frame of data.frames) URL.revokeObjectURL(frame.url);
     this.waveforms.clear();
+    this.waveformSummaries.clear();
     this.waveformErrors.clear();
     this.waveformStatus.clear();
     this.analysisAssets.clear();
@@ -313,8 +346,11 @@ export class TimelineMediaPreviewCache {
       this.log(asset, 'peak-built', `峰值降采样完成（${timings.peakBuildMs.toFixed(1)} ms）`, timings);
       const cacheStartedAt = performance.now();
       const data: WaveformData = { durationMs: asset.durationMs, ...envelope };
-      if (this.isCurrent(key, version)) this.waveforms.set(key, data);
       const summary = summariseWaveform(data);
+      if (this.isCurrent(key, version)) {
+        this.waveforms.set(key, data);
+        this.waveformSummaries.set(key, summary);
+      }
       this.log(asset, 'envelope-summary', `缓存 ${key} v${version}：${summary.bucketCount} 桶，非零 ${summary.nonZeroPeakBuckets}`, timings, { cacheKey: key, cacheVersion: version, durationMs: data.durationMs, ...summary });
       timings.cacheWriteMs = performance.now() - cacheStartedAt;
       timings.totalMs = performance.now() - queuedAt;
@@ -394,8 +430,11 @@ export class TimelineMediaPreviewCache {
       timings.peakBuildMs = performance.now() - peakStartedAt;
       const cacheStartedAt = performance.now();
       const data: WaveformData = { durationMs: asset.durationMs, ...envelope };
-      if (this.isCurrent(key, version)) this.waveforms.set(key, data);
       const summary = summariseWaveform(data);
+      if (this.isCurrent(key, version)) {
+        this.waveforms.set(key, data);
+        this.waveformSummaries.set(key, summary);
+      }
       this.log(asset, 'envelope-summary', `缓存 ${key} v${version}：${summary.bucketCount} 桶，非零 ${summary.nonZeroPeakBuckets}`, timings, { cacheKey: key, cacheVersion: version, durationMs: data.durationMs, ...summary });
       timings.cacheWriteMs = performance.now() - cacheStartedAt;
       timings.totalMs = performance.now() - queuedAt;

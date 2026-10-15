@@ -7,12 +7,14 @@ import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
 import { scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
+import { DEFAULT_WAVEFORM_DISPLAY_SETTINGS, normaliseWaveformDisplaySettings, type WaveformDisplaySettings } from './timeline/waveformDisplay';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
 const makeId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 const LAYOUT_STORAGE_KEY = 'frameyu-workspace-layout-v1';
+const WAVEFORM_DISPLAY_STORAGE_KEY = 'frameyu-waveform-display-v1';
 type LayoutState = WorkspaceLayout;
 type MaterialFilter = 'all' | 'video' | 'music' | 'sfx' | 'caption';
 type LayoutDrag = { kind: 'asset' | 'property' | 'timeline'; pointerId: number; startClient: number; startValue: number };
@@ -31,6 +33,10 @@ function readLayout(): LayoutState {
     if (stored && [stored.assetWidth, stored.propertyWidth, stored.timelineHeight].every(Number.isFinite)) return { assetWidth: stored.assetWidth!, propertyWidth: stored.propertyWidth!, timelineHeight: stored.timelineHeight! };
   } catch { /* Session layout is optional. */ }
   return DEFAULT_WORKSPACE_LAYOUT;
+}
+
+function readWaveformDisplaySettings(): WaveformDisplaySettings {
+  try { return normaliseWaveformDisplaySettings(JSON.parse(sessionStorage.getItem(WAVEFORM_DISPLAY_STORAGE_KEY) ?? 'null')); } catch { return DEFAULT_WAVEFORM_DISPLAY_SETTINGS; }
 }
 
 const sortedTracks = (tracks: Track[]) => [...tracks].sort((left, right) => left.order - right.order);
@@ -68,6 +74,7 @@ export default function App() {
   const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
   const [timelinePreviewVersion, setTimelinePreviewVersion] = useState(0);
   const [waveformSelfTestVisible, setWaveformSelfTestVisible] = useState(false);
+  const [waveformDisplaySettings, setWaveformDisplaySettings] = useState<WaveformDisplaySettings>(readWaveformDisplaySettings);
   const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
 
@@ -164,6 +171,10 @@ export default function App() {
   useEffect(() => {
     try { sessionStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout)); } catch { /* Session storage is optional. */ }
   }, [layout]);
+
+  useEffect(() => {
+    try { sessionStorage.setItem(WAVEFORM_DISPLAY_STORAGE_KEY, JSON.stringify(waveformDisplaySettings)); } catch { /* Session storage is optional. */ }
+  }, [waveformDisplaySettings]);
 
   useEffect(() => {
     const container = editorBodyRef.current;
@@ -644,7 +655,7 @@ export default function App() {
           <div className="material-list" ref={materialListRef} aria-label="素材列表">
             {visibleMaterials.assets.map((asset) => <MaterialAssetCard key={asset.id} asset={asset} previewUrl={audioPreviewUrlsRef.current.get(asset.id)} projectDuration={projectDuration} analysisStatus={timelinePreviewCacheRef.current.getWaveformStatus(asset.id, asset.type)} onRetryWaveform={() => retryWaveform(asset)} onAddVideo={() => addVideo(asset)} onAddAudio={(kind) => addAudio(asset, kind)} />)}
             {visibleMaterials.captions.map((clip) => <button className="asset-card caption-material-card" key={clip.id} onClick={() => { setSelectedTrackId(clip.trackId); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }}><span className="asset-icon">T</span><span className="asset-card-body"><b title={clip.text}>{clip.text || '空字幕'}</b><small>字幕 · {formatTime(clip.durationMs)} · 编辑</small></span></button>)}
-            <details className="waveform-diagnostics"><summary>波形诊断日志（{waveformDiagnostics.length}）</summary><button onClick={() => void copyWaveformDiagnostics()}>复制诊断日志</button><button onClick={() => setWaveformSelfTestVisible((visible) => !visible)}>{waveformSelfTestVisible ? '隐藏 Canvas 自检' : '显示 Canvas 自检'}</button>{waveformSelfTestVisible && <div className="waveform-canvas-self-test"><WaveformCanvas data={WAVEFORM_CANVAS_SELF_TEST_DATA} sourceStartMs={0} sourceDurationMs={WAVEFORM_CANVAS_SELF_TEST_DATA.durationMs} color="#72e4cf" /></div>}<pre>{waveformDiagnostics.slice(-24).map((entry) => `${entry.assetName} · ${entry.phase} · ${entry.message}${entry.details ? ` · ${JSON.stringify(entry.details)}` : ''}`).join('\n') || '尚未创建分析任务。'}</pre></details>
+            <details className="waveform-diagnostics"><summary>波形诊断日志（{waveformDiagnostics.length}）</summary><button onClick={() => void copyWaveformDiagnostics()}>复制诊断日志</button><button onClick={() => setWaveformSelfTestVisible((visible) => !visible)}>{waveformSelfTestVisible ? '隐藏 Canvas 自检' : '显示 Canvas 自检'}</button>{waveformSelfTestVisible && <div className="waveform-canvas-self-test"><WaveformCanvas data={WAVEFORM_CANVAS_SELF_TEST_DATA} sourceStartMs={0} sourceDurationMs={WAVEFORM_CANVAS_SELF_TEST_DATA.durationMs} color="#72e4cf" displaySettings={waveformDisplaySettings} /></div>}<pre>{waveformDiagnostics.slice(-24).map((entry) => `${entry.assetName} · ${entry.phase} · ${entry.message}${entry.details ? ` · ${JSON.stringify(entry.details)}` : ''}`).join('\n') || '尚未创建分析任务。'}</pre></details>
             {!visibleMaterials.assets.length && !visibleMaterials.captions.length && <p className="material-empty">暂无该类型素材。使用上方入口导入本地文件或手动创建字幕。</p>}
           </div>
         </aside>
@@ -658,10 +669,10 @@ export default function App() {
       </section>
       <Divider kind="timeline" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, timelineHeight: DEFAULT_WORKSPACE_LAYOUT.timelineHeight }))} />
       <section className="timeline-panel panel" style={{ height: `${layout.timelineHeight}px` }}>
-        <div className="timeline-toolbar"><b>时间轴</b><div className="timeline-actions"><button aria-label="分割选中片段" disabled={!selected || !canSplitTimelineClip(project, selected.id, editor.playheadMs)} onClick={() => splitClipAtPlayhead()}>分割</button><button onClick={() => createTrack('caption')}>+ 字幕轨</button><button onClick={() => createTrack('video')}>+ 视频轨</button><button onClick={() => createTrack('music')}>+ 音乐轨</button><button onClick={() => createTrack('sfx')}>+ 音效轨</button><label>缩放 <input aria-label="时间轴缩放" type="range" min="45" max="240" value={editor.zoom} onChange={(event) => setEditor((previous) => ({ ...previous, zoom: Number(event.target.value) }))} /></label></div></div>
+        <div className="timeline-toolbar"><b>时间轴</b><div className="timeline-actions"><button aria-label="分割选中片段" disabled={!selected || !canSplitTimelineClip(project, selected.id, editor.playheadMs)} onClick={() => splitClipAtPlayhead()}>分割</button><button onClick={() => createTrack('caption')}>+ 字幕轨</button><button onClick={() => createTrack('video')}>+ 视频轨</button><button onClick={() => createTrack('music')}>+ 音乐轨</button><button onClick={() => createTrack('sfx')}>+ 音效轨</button><label>波形 <select aria-label="波形显示模式" value={waveformDisplaySettings.mode} onChange={(event) => setWaveformDisplaySettings((previous) => ({ ...previous, mode: event.target.value as WaveformDisplaySettings['mode'] }))}><option value="linear">线性</option><option value="enhanced">增强</option></select></label><label>增益 <input aria-label="波形显示增益" type="range" min="1" max="5" step="0.05" value={waveformDisplaySettings.gain} onChange={(event) => setWaveformDisplaySettings((previous) => ({ ...previous, gain: Number(event.target.value) }))} /></label><label>对比 <input aria-label="波形显示对比度" type="range" min="0.7" max="1.6" step="0.02" value={waveformDisplaySettings.contrast} onChange={(event) => setWaveformDisplaySettings((previous) => ({ ...previous, contrast: Number(event.target.value) }))} /></label><button aria-label="恢复默认波形显示" onClick={() => setWaveformDisplaySettings(DEFAULT_WAVEFORM_DISPLAY_SETTINGS)}>重置波形</button><label>缩放 <input aria-label="时间轴缩放" type="range" min="45" max="240" value={editor.zoom} onChange={(event) => setEditor((previous) => ({ ...previous, zoom: Number(event.target.value) }))} /></label></div></div>
         <div className="timeline-viewport">
           <div className="timeline-ruler-row"><div className="timeline-ruler-label">轨道</div><div className="timeline-ruler-scroll" ref={rulerScrollRef} onScroll={syncRulerScroll}><div className="ruler" style={{ width: `${contentWidth - TRACK_HEADER_WIDTH_PX}px` }}>{ticks.map((time) => <span key={time} style={{ left: `${timeToTimelineX(time, editor.zoom) - TRACK_HEADER_WIDTH_PX}px` }}>{formatTime(time).slice(0, 5)}</span>)}</div></div></div>
-          <div className="timeline-body-viewport"><div className="timeline-scroll" ref={timelineScrollRef} onScroll={syncBodyScroll}><div className="timeline-content" style={{ width: `${contentWidth}px` }} onClick={clickTimeline}>{tracks.map((track) => <TrackRow key={track.id} track={track} clips={project.clips.filter((clip) => clip.trackId === track.id)} assetsById={assetsById} previewCache={timelinePreviewCacheRef.current} previewVersion={timelinePreviewVersion} selectedClipId={selected?.id} selectedTrackId={selectedTrackId} videoTrackCount={tracks.filter((item) => item.type === 'video').length} zoom={editor.zoom} onSelectTrack={setSelectedTrackId} onStartTrackDrag={startTrackDrag} onStartTrackResize={startTrackResize} onStartClipDrag={startClipDrag} onRename={(name) => setProject((previous) => renameTrack(previous, track.id, name))} onDelete={() => deleteTrack(track)} onSelectClip={(clip) => { setSelectedTrackId(track.id); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }} onOpenContextMenu={openClipContextMenu} />)}</div></div><div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom) - timelineScrollLeft}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} /></div>
+          <div className="timeline-body-viewport"><div className="timeline-scroll" ref={timelineScrollRef} onScroll={syncBodyScroll}><div className="timeline-content" style={{ width: `${contentWidth}px` }} onClick={clickTimeline}>{tracks.map((track) => <TrackRow key={track.id} track={track} clips={project.clips.filter((clip) => clip.trackId === track.id)} assetsById={assetsById} previewCache={timelinePreviewCacheRef.current} previewVersion={timelinePreviewVersion} waveformDisplaySettings={waveformDisplaySettings} selectedClipId={selected?.id} selectedTrackId={selectedTrackId} videoTrackCount={tracks.filter((item) => item.type === 'video').length} zoom={editor.zoom} onSelectTrack={setSelectedTrackId} onStartTrackDrag={startTrackDrag} onStartTrackResize={startTrackResize} onStartClipDrag={startClipDrag} onRename={(name) => setProject((previous) => renameTrack(previous, track.id, name))} onDelete={() => deleteTrack(track)} onSelectClip={(clip) => { setSelectedTrackId(track.id); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }} onOpenContextMenu={openClipContextMenu} />)}</div></div><div className="playhead" style={{ left: `${timeToTimelineX(editor.playheadMs, editor.zoom) - timelineScrollLeft}px` }} onPointerDown={startPlayheadDrag} onClick={(event) => event.stopPropagation()} /></div>
         </div>
       </section>
       {clipContextMenu && <div className="clip-context-menu" role="menu" aria-label="片段操作菜单" style={{ left: `${clipContextMenu.x}px`, top: `${clipContextMenu.y}px` }} onPointerDown={(event) => event.stopPropagation()}><button role="menuitem" disabled={!canSplitTimelineClip(project, clipContextMenu.clipId, editor.playheadMs)} onClick={() => splitClipAtPlayhead(clipContextMenu.clipId)}>在播放头处分割</button></div>}
@@ -689,19 +700,19 @@ function Divider({ kind, onPointerDown, onDoubleClick }: { kind: LayoutDrag['kin
   return <div role="separator" aria-label={label} aria-orientation={horizontal ? 'horizontal' : 'vertical'} tabIndex={0} className={`layout-divider ${horizontal ? 'horizontal' : 'vertical'}`} onPointerDown={(event) => onPointerDown(event, kind)} onDoubleClick={onDoubleClick} />;
 }
 
-function TrackRow({ track, clips, assetsById, previewCache, previewVersion, selectedClipId, selectedTrackId, videoTrackCount, zoom, onSelectTrack, onStartTrackDrag, onStartTrackResize, onStartClipDrag, onRename, onDelete, onSelectClip, onOpenContextMenu }: { track: Track; clips: TimelineClip[]; assetsById: ReadonlyMap<string, Asset>; previewCache: TimelineMediaPreviewCache; previewVersion: number; selectedClipId?: string; selectedTrackId: string; videoTrackCount: number; zoom: number; onSelectTrack: (trackId: string) => void; onStartTrackDrag: (event: React.PointerEvent, track: Track) => void; onStartTrackResize: (event: React.PointerEvent, track: Track) => void; onStartClipDrag: (event: React.PointerEvent, clip: TimelineClip, mode: 'move' | 'left' | 'right') => void; onRename: (name: string) => void; onDelete: () => void; onSelectClip: (clip: TimelineClip) => void; onOpenContextMenu: (event: React.MouseEvent, clip: TimelineClip) => void }) {
+function TrackRow({ track, clips, assetsById, previewCache, previewVersion, waveformDisplaySettings, selectedClipId, selectedTrackId, videoTrackCount, zoom, onSelectTrack, onStartTrackDrag, onStartTrackResize, onStartClipDrag, onRename, onDelete, onSelectClip, onOpenContextMenu }: { track: Track; clips: TimelineClip[]; assetsById: ReadonlyMap<string, Asset>; previewCache: TimelineMediaPreviewCache; previewVersion: number; waveformDisplaySettings: WaveformDisplaySettings; selectedClipId?: string; selectedTrackId: string; videoTrackCount: number; zoom: number; onSelectTrack: (trackId: string) => void; onStartTrackDrag: (event: React.PointerEvent, track: Track) => void; onStartTrackResize: (event: React.PointerEvent, track: Track) => void; onStartClipDrag: (event: React.PointerEvent, clip: TimelineClip, mode: 'move' | 'left' | 'right') => void; onRename: (name: string) => void; onDelete: () => void; onSelectClip: (clip: TimelineClip) => void; onOpenContextMenu: (event: React.MouseEvent, clip: TimelineClip) => void }) {
   return <div className={`track ${selectedTrackId === track.id ? 'selected-track' : ''}`} id={`track-row-${track.id}`} style={{ height: `${track.heightPx}px` }} onClick={() => onSelectTrack(track.id)}>
     <div className="track-label" onClick={(event) => event.stopPropagation()}>
       <button className="track-grip" aria-label={`拖动${track.name}排序`} title="拖动排序" onPointerDown={(event) => onStartTrackDrag(event, track)}>⠿</button>
       <input aria-label={`${track.name}名称`} value={track.name} onChange={(event) => onRename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} />
       <button className="track-delete" aria-label={`删除${track.name}`} title={track.clipIds.length ? '含有片段的轨道不能删除' : track.type === 'video' && videoTrackCount <= 1 ? '至少保留一条视频轨' : '删除空轨道'} disabled={track.clipIds.length > 0 || track.type === 'video' && videoTrackCount <= 1} onClick={onDelete}>×</button>
     </div>
-    <div className="track-lane" data-preview-version={previewVersion} style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }} onContextMenu={(event) => onOpenContextMenu(event, clip)}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><TimelineClipPreview clip={clip} asset={clip.assetId ? assetsById.get(clip.assetId) : undefined} cache={previewCache} /><span className="timeline-clip-label">{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
+    <div className="track-lane" data-preview-version={previewVersion} style={{ backgroundSize: `${zoom}px 100%` }}>{clips.map((clip) => <div role="button" tabIndex={0} className={`timeline-clip ${clip.type} ${selectedClipId === clip.id ? 'selected' : ''}`} key={clip.id} style={{ left: `${clip.startMs / 1000 * zoom}px`, width: `${Math.max(18, clip.durationMs / 1000 * zoom)}px` }} onPointerDown={(event) => onStartClipDrag(event, clip, 'move')} onClick={(event) => { event.stopPropagation(); onSelectClip(clip); }} onContextMenu={(event) => onOpenContextMenu(event, clip)}><i className="trim left" onPointerDown={(event) => onStartClipDrag(event, clip, 'left')} /><TimelineClipPreview clip={clip} asset={clip.assetId ? assetsById.get(clip.assetId) : undefined} cache={previewCache} displaySettings={waveformDisplaySettings} /><span className="timeline-clip-label">{clip.type === 'caption' ? clip.text : clip.name}</span><i className="trim right" onPointerDown={(event) => onStartClipDrag(event, clip, 'right')} /></div>)}</div>
     <div className="track-height-handle" aria-label={`调整${track.name}高度`} onPointerDown={(event) => onStartTrackResize(event, track)} />
   </div>;
 }
 
-function TimelineClipPreview({ clip, asset, cache }: { clip: TimelineClip; asset?: Asset; cache: TimelineMediaPreviewCache }) {
+function TimelineClipPreview({ clip, asset, cache, displaySettings }: { clip: TimelineClip; asset?: Asset; cache: TimelineMediaPreviewCache; displaySettings: WaveformDisplaySettings }) {
   if (clip.type === 'audio') {
     const waveform = cache.getWaveform(clip.assetId);
     const error = cache.getWaveformError(clip.assetId);
@@ -712,13 +723,13 @@ function TimelineClipPreview({ clip, asset, cache }: { clip: TimelineClip; asset
     }
     const sourceDurationMs = getClipSourceDurationMs(clip);
     const color = asset?.audioKind === 'sfx' ? '#f4b75a' : '#72e4cf';
-    return <WaveformCanvas className="audio-waveform" data={waveform} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color={color} />;
+    return <WaveformCanvas className="audio-waveform" data={waveform} summary={cache.getWaveformSummary(clip.assetId)} displaySettings={displaySettings} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color={color} />;
   }
   if (clip.type === 'video' && asset) {
     const waveform = cache.getVideoWaveform(clip.assetId);
     const status = cache.getWaveformStatus(clip.assetId, 'video');
     const sourceDurationMs = getClipSourceDurationMs(clip);
-    if (waveform) return <WaveformCanvas className="video-audio-waveform" data={waveform} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color="#86bce5" compact />;
+    if (waveform) return <WaveformCanvas className="video-audio-waveform" data={waveform} summary={cache.getVideoWaveformSummary(clip.assetId)} displaySettings={displaySettings} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color="#86bce5" compact />;
     const label = status?.phase === 'no-audio' ? '无音轨' : status?.phase === 'failed' ? '原声波形不可用' : status?.phase === 'sampling' ? '正在生成原声波形…' : status?.phase === 'decoding' ? '正在解码原声…' : '等待原声波形…';
     return <div className={`video-waveform-placeholder ${status?.phase === 'no-audio' ? 'no-audio' : ''}`} aria-label={label}>{label}</div>;
   }
