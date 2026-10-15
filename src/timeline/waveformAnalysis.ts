@@ -32,6 +32,7 @@ export interface WaveformDiagnosticEntry {
   phase: string;
   message: string;
   timings?: WaveformTiming;
+  details?: Record<string, string | number>;
 }
 
 /** One complete PCM decode at a time keeps memory and CPU spikes bounded. */

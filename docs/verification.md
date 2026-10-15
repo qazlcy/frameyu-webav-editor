@@ -273,3 +273,11 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 自动检查 | 通过 | 新增 Peak+RMS、立体声反相、源窗口聚合、静音与有界分辨率测试；`npm run typecheck`、Vitest 56/56、`npm run build` 通过。 |
 
 本地 Chrome/Edge 视觉验收：使用相同 `webav-44.1kHz-2chan.mp3` 截取优化前后截图；在 45/100/240 缩放及低/高轨高下检查连续对称填充包络、静音零线、弱音细节和强弱顺序。再检查带淡入淡出音频、视频原声、裁剪、分割、跨轨、倍速和同源多引用；这些操作必须仅重采样缓存而不生成新的 `decode-ready` 诊断条目。远程无头 Chromium 缺完整 WebCodecs，不能据此标记真实媒体视觉或导出为已验证。
+
+## Phase 6.2.1 提交 A：Canvas 与音频添加修复
+
+本地 Chrome 中“`ready`/`cached` 且 2048 桶已生成、时间轴却空白”的根因已经定位为 Canvas CSS：Canvas 是替换元素，原来的 `width: auto; height: auto` 使其采用约 300×150 的内在尺寸；波形中线绘制在片段的可见裁剪区之外，并非缓存或 React 通知没有更新。现改为每个波形 Canvas 显式填充它的音频/视频可视区域，Canvas 自检入口在不依赖 WebCodecs 的情况下以像素读取验证了非透明绘制结果。
+
+- 完成诊断新增 `envelope-summary`：包含 Asset、`audio:/video:` 缓存键、版本、素材时长、桶数、最大/平均 Peak、最大 RMS 与非零桶数；Canvas 首次绘制输出尺寸、DPR、可见区间、列数和振幅范围。
+- 修复前 `addAudioClip` 在没有视频时被 `normaliseToVideoDuration` 静默移除，App 却显示“已加入”；现在允许在首条视频前暂存音频，视频出现后才应用时长裁剪。目标轨使用最新 `projectRef` 查询，并记录 `[TimelineAdd]` 点击/工程更新事件。
+- 自动检查：Vitest 58/58 通过；`test:e2e:local-libs` 新增合成 Canvas 像素测试，通过 4 项、真实媒体合成 1 项因 WebCodecs 跳过。真实 MP3/MP4 视觉仍需本地 Chrome 验收。

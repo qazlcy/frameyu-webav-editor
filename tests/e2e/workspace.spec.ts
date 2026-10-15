@@ -109,3 +109,18 @@ test('manages an additional empty video track without disturbing the existing ti
   await page.getByRole('button', { name: '删除画中画层' }).click();
   await expect(page.locator('.track')).toHaveCount(4);
 });
+
+test('draws the decoder-independent Canvas waveform self-test with visible pixels', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator('.waveform-diagnostics summary').click();
+  await page.getByRole('button', { name: '显示 Canvas 自检' }).click();
+  const canvas = page.locator('.waveform-canvas-self-test canvas');
+  await expect(canvas).toBeVisible();
+  await expect.poll(async () => canvas.evaluate((node) => {
+    const context = (node as HTMLCanvasElement).getContext('2d');
+    if (!context) return false;
+    const { data } = context.getImageData(0, 0, (node as HTMLCanvasElement).width, (node as HTMLCanvasElement).height);
+    for (let index = 3; index < data.length; index += 4) if ((data[index] ?? 0) > 0) return true;
+    return false;
+  })).toBe(true);
+});

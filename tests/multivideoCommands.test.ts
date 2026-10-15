@@ -75,6 +75,15 @@ describe('multi-video project commands', () => {
     expect(project.clips.filter((clip) => clip.type === 'audio' || clip.type === 'caption')).toHaveLength(2);
   });
 
+  it('stages audio immediately before a video exists and permits repeated source references', () => {
+    let project = addAsset(emptyProject(), audio);
+    project = addAudioClip(project, audio, 'music');
+    project = addAudioClip(project, audio, 'music');
+    expect(project.clips.filter((clip) => clip.type === 'audio')).toHaveLength(2);
+    expect(project.clips.every((clip) => clip.durationMs === audio.durationMs)).toBe(true);
+    expect(getProjectDuration(project)).toBe(0);
+  });
+
   it('creates a manual caption from explicit text and timeline bounds', () => {
     let project = addAsset(emptyProject(), video('a', 6000));
     project = appendVideoClip(project, project.assets[0]);

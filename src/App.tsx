@@ -6,7 +6,7 @@ import { TRACK_HEADER_WIDTH_PX, clamp, getClipSourceDurationMs, timelineContentW
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
 import { sampleThumbnailsForClip, scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
-import { WaveformCanvas } from './timeline/WaveformCanvas';
+import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
@@ -67,6 +67,7 @@ export default function App() {
   const [captionDraft, setCaptionDraft] = useState<CaptionDraft>({ text: '', startMs: 0, endMs: 3000 });
   const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
   const [timelinePreviewVersion, setTimelinePreviewVersion] = useState(0);
+  const [waveformSelfTestVisible, setWaveformSelfTestVisible] = useState(false);
   const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
 
@@ -305,15 +306,22 @@ export default function App() {
   }
 
   function targetTrack(type: TrackType) {
-    const selectedTrack = getTrack(project, selectedTrackId);
-    return selectedTrack?.type === type ? selectedTrack : tracks.find((track) => track.type === type);
+    const currentProject = projectRef.current;
+    const selectedTrack = getTrack(currentProject, selectedTrackId);
+    return selectedTrack?.type === type ? selectedTrack : sortedTracks(currentProject.tracks).find((track) => track.type === type);
   }
 
   function addAudio(asset: Asset, type: 'music' | 'sfx') {
     const track = targetTrack(type);
-    if (!track) return;
+    const clickedAt = performance.now();
+    console.info('[TimelineAdd]', { phase: 'click', assetId: asset.id, assetName: asset.name, type, trackId: track?.id });
+    if (!track) {
+      setEditor((previous) => ({ ...previous, status: 'error', message: `没有可用的${type === 'music' ? '背景音乐' : '音效'}轨道，请先新建轨道。` }));
+      return;
+    }
     setProject((previous) => addAudioClip(previous, asset, track.id));
     setEditor((previous) => ({ ...previous, status: 'ready', message: `${asset.name} 已加入${track.name}` }));
+    console.info('[TimelineAdd]', { phase: 'project-update-requested', assetId: asset.id, trackId: track.id, elapsedMs: performance.now() - clickedAt });
   }
 
   function addVideo(asset: Asset) {
@@ -636,7 +644,7 @@ export default function App() {
           <div className="material-list" ref={materialListRef} aria-label="素材列表">
             {visibleMaterials.assets.map((asset) => <MaterialAssetCard key={asset.id} asset={asset} previewUrl={audioPreviewUrlsRef.current.get(asset.id)} projectDuration={projectDuration} analysisStatus={timelinePreviewCacheRef.current.getWaveformStatus(asset.id, asset.type)} onRetryWaveform={() => retryWaveform(asset)} onAddVideo={() => addVideo(asset)} onAddAudio={(kind) => addAudio(asset, kind)} />)}
             {visibleMaterials.captions.map((clip) => <button className="asset-card caption-material-card" key={clip.id} onClick={() => { setSelectedTrackId(clip.trackId); setEditor((previous) => ({ ...previous, selectedClipId: clip.id })); }}><span className="asset-icon">T</span><span className="asset-card-body"><b title={clip.text}>{clip.text || '空字幕'}</b><small>字幕 · {formatTime(clip.durationMs)} · 编辑</small></span></button>)}
-            {project.assets.some((asset) => asset.type === 'audio' || asset.type === 'video') && <details className="waveform-diagnostics"><summary>波形诊断日志（{waveformDiagnostics.length}）</summary><button onClick={() => void copyWaveformDiagnostics()}>复制诊断日志</button><pre>{waveformDiagnostics.slice(-24).map((entry) => `${entry.assetName} · ${entry.phase} · ${entry.message}`).join('\n') || '尚未创建分析任务。'}</pre></details>}
+            <details className="waveform-diagnostics"><summary>波形诊断日志（{waveformDiagnostics.length}）</summary><button onClick={() => void copyWaveformDiagnostics()}>复制诊断日志</button><button onClick={() => setWaveformSelfTestVisible((visible) => !visible)}>{waveformSelfTestVisible ? '隐藏 Canvas 自检' : '显示 Canvas 自检'}</button>{waveformSelfTestVisible && <div className="waveform-canvas-self-test"><WaveformCanvas data={WAVEFORM_CANVAS_SELF_TEST_DATA} sourceStartMs={0} sourceDurationMs={WAVEFORM_CANVAS_SELF_TEST_DATA.durationMs} color="#72e4cf" /></div>}<pre>{waveformDiagnostics.slice(-24).map((entry) => `${entry.assetName} · ${entry.phase} · ${entry.message}${entry.details ? ` · ${JSON.stringify(entry.details)}` : ''}`).join('\n') || '尚未创建分析任务。'}</pre></details>
             {!visibleMaterials.assets.length && !visibleMaterials.captions.length && <p className="material-empty">暂无该类型素材。使用上方入口导入本地文件或手动创建字幕。</p>}
           </div>
         </aside>

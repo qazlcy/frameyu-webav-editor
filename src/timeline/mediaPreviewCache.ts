@@ -53,6 +53,26 @@ export function sampleWaveformRange(data: WaveformData, sourceStartMs: number, d
 
 export interface WaveformColumn { peak: number; rms: number; sampleCount: number; }
 
+export interface WaveformSummary {
+  bucketCount: number;
+  maxPeak: number;
+  averagePeak: number;
+  maxRms: number;
+  nonZeroPeakBuckets: number;
+}
+
+export function summariseWaveform(data: WaveformData): WaveformSummary {
+  const rms = data.rms ?? data.peaks;
+  const total = data.peaks.reduce((sum, peak) => sum + peak, 0);
+  return {
+    bucketCount: data.peaks.length,
+    maxPeak: Math.max(0, ...data.peaks),
+    averagePeak: data.peaks.length ? total / data.peaks.length : 0,
+    maxRms: Math.max(0, ...rms),
+    nonZeroPeakBuckets: data.peaks.filter((peak) => peak > 0).length,
+  };
+}
+
 /** Aggregates only the source time range covered by a visible timeline clip; no PCM is revisited. */
 export function sampleWaveformEnvelope(data: WaveformData, sourceStartMs: number, durationMs: number, columnCount: number): WaveformColumn[] {
   if (!data.peaks.length || !data.durationMs || durationMs <= 0) return [];
@@ -122,7 +142,7 @@ export class TimelineMediaPreviewCache {
     const status = assetId ? this.waveformStatus.get(waveformKey(type, assetId)) : undefined;
     return status && { ...status, timings: { ...status.timings } };
   }
-  getWaveformDiagnostics() { return this.diagnostics.map((entry) => ({ ...entry, timings: entry.timings && { ...entry.timings } })); }
+  getWaveformDiagnostics() { return this.diagnostics.map((entry) => ({ ...entry, timings: entry.timings && { ...entry.timings }, details: entry.details && { ...entry.details } })); }
   subscribe(listener: (asset: Asset) => void) {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
@@ -294,6 +314,8 @@ export class TimelineMediaPreviewCache {
       const cacheStartedAt = performance.now();
       const data: WaveformData = { durationMs: asset.durationMs, ...envelope };
       if (this.isCurrent(key, version)) this.waveforms.set(key, data);
+      const summary = summariseWaveform(data);
+      this.log(asset, 'envelope-summary', `缓存 ${key} v${version}：${summary.bucketCount} 桶，非零 ${summary.nonZeroPeakBuckets}`, timings, { cacheKey: key, cacheVersion: version, durationMs: data.durationMs, ...summary });
       timings.cacheWriteMs = performance.now() - cacheStartedAt;
       timings.totalMs = performance.now() - queuedAt;
       if (this.isCurrent(key, version)) this.setWaveformStatus(asset, { phase: 'ready', attempt, timings }, `分析完成，共 ${envelope.peaks.length} 个峰值/RMS 桶`);
@@ -373,6 +395,8 @@ export class TimelineMediaPreviewCache {
       const cacheStartedAt = performance.now();
       const data: WaveformData = { durationMs: asset.durationMs, ...envelope };
       if (this.isCurrent(key, version)) this.waveforms.set(key, data);
+      const summary = summariseWaveform(data);
+      this.log(asset, 'envelope-summary', `缓存 ${key} v${version}：${summary.bucketCount} 桶，非零 ${summary.nonZeroPeakBuckets}`, timings, { cacheKey: key, cacheVersion: version, durationMs: data.durationMs, ...summary });
       timings.cacheWriteMs = performance.now() - cacheStartedAt;
       timings.totalMs = performance.now() - queuedAt;
       if (this.isCurrent(key, version)) this.setWaveformStatus(asset, { phase: 'ready', attempt, timings }, `视频原声波形完成，共 ${envelope.peaks.length} 个峰值/RMS 桶`);
@@ -420,11 +444,11 @@ export class TimelineMediaPreviewCache {
     for (const listener of this.listeners) listener(asset);
   }
 
-  private log(asset: Asset, phase: string, message: string, timings?: WaveformTiming) {
+  private log(asset: Asset, phase: string, message: string, timings?: WaveformTiming, details?: Record<string, string | number>) {
     const entry: WaveformDiagnosticEntry = {
       at: performance.now(), assetId: asset.id, assetName: asset.name, assetType: asset.type, durationMs: asset.durationMs,
       attempt: this.waveformStatus.get(waveformKey(asset.type, asset.id))?.attempt ?? 0,
-      phase, message, timings: timings && { ...timings },
+      phase, message, timings: timings && { ...timings }, details,
     };
     this.pushDiagnostic(entry);
     console.info('[WaveformAnalysis]', entry);

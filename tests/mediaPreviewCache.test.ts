@@ -44,7 +44,7 @@ vi.mock('@webav/av-cliper', () => ({
   },
 }));
 
-import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformEnvelope, sampleWaveformRange, scheduleMediaPreviewAnalysis, waveformBucketCount, waveformVisualAmplitude, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
+import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformEnvelope, sampleWaveformRange, scheduleMediaPreviewAnalysis, summariseWaveform, waveformBucketCount, waveformVisualAmplitude, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
 import { TimelineMediaPreviewCache } from '../src/timeline/mediaPreviewCache';
 import type { TimelineClip } from '../src/editor/types';
 import type { Asset } from '../src/editor/types';
@@ -83,6 +83,12 @@ describe('timeline media preview calculations', () => {
     expect(sampleWaveformEnvelope(data, 1000, 2000, 2)).toEqual([{ peak: 0.1, rms: 0.05, sampleCount: 10 }, { peak: 0.6, rms: 0.3, sampleCount: 10 }]);
     expect(waveformVisualAmplitude(0, 0)).toBe(0);
     expect(waveformVisualAmplitude(0.6, 0.3)).toBeGreaterThan(waveformVisualAmplitude(0.1, 0.05));
+  });
+
+  it('reports non-zero envelope diagnostics that distinguish valid cached audio from silence', () => {
+    expect(summariseWaveform({ durationMs: 1000, peaks: [0, 0.25, 1], rms: [0, 0.1, 0.5] })).toEqual({
+      bucketCount: 3, maxPeak: 1, averagePeak: expect.closeTo(0.4166666667), maxRms: 0.5, nonZeroPeakBuckets: 2,
+    });
   });
 
   it('serialises complete analysis jobs so a second decode starts only after the first settles', async () => {

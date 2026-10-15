@@ -24,7 +24,9 @@ function withTracks(project: Project, tracks: Track[]): Project {
 
 function normaliseToVideoDuration(project: Project, clips: TimelineClip[]): TimelineClip[] {
   const videoDuration = clips.filter((clip) => clip.type === 'video').reduce((end, clip) => Math.max(end, clip.startMs + clip.durationMs), 0);
-  if (!videoDuration) return clips.filter((clip) => clip.type === 'video');
+  // Keep staged audio/captions while the project has no video yet. As soon as a video clip is
+  // added, the normal bounds pass below trims non-video clips to the actual project duration.
+  if (!videoDuration) return clips;
   return clips.flatMap((clip) => {
     if (clip.type === 'video') return [clip];
     if (clip.startMs >= videoDuration) return [];
@@ -83,10 +85,13 @@ export function addAudioClip(project: Project, asset: Asset, trackId: string): P
   const projectDuration = getProjectDuration(project);
   const track = getTrack(project, trackId);
   if (track?.type !== 'music' && track?.type !== 'sfx') return project;
-  if (!projectDuration) return project;
+  // Audio can be staged before the first video arrives. It remains a normal editable clip;
+  // video duration still exclusively controls preview/export duration once video is present.
+  const usedDurationMs = Math.min(asset.durationMs, projectDuration || asset.durationMs);
+  if (usedDurationMs <= 0) return project;
   const clip: TimelineClip = {
     id: id('audio'), trackId, type: 'audio', assetId: asset.id, name: asset.name,
-    startMs: 0, sourceStartMs: 0, sourceDurationMs: Math.min(asset.durationMs, projectDuration), durationMs: Math.min(asset.durationMs, projectDuration), playbackRate: 1, volume: 1,
+    startMs: 0, sourceStartMs: 0, sourceDurationMs: usedDurationMs, durationMs: usedDurationMs, playbackRate: 1, volume: 1,
   };
   return withClips(project, [...project.clips, clip]);
 }

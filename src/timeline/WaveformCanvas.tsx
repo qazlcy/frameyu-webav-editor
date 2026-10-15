@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { sampleWaveformEnvelope, waveformVisualAmplitude, type WaveformData } from './mediaPreviewCache';
 
 interface WaveformCanvasProps {
@@ -10,13 +10,26 @@ interface WaveformCanvasProps {
   className?: string;
 }
 
+/** Browser-independent diagnostic data for checking Canvas layout without any decoder. */
+export const WAVEFORM_CANVAS_SELF_TEST_DATA: WaveformData = {
+  durationMs: 8000,
+  peaks: Array.from({ length: 256 }, (_, index) => {
+    const envelope = .14 + .86 * Math.abs(Math.sin(index / 19));
+    return index > 72 && index < 94 ? 0 : envelope * (.55 + .45 * Math.abs(Math.sin(index / 7)));
+  }),
+  rms: Array.from({ length: 256 }, (_, index) => index > 72 && index < 94 ? 0 : (.08 + .64 * Math.abs(Math.sin(index / 19))) * (.55 + .45 * Math.abs(Math.sin(index / 7)))),
+  sampleCounts: Array.from({ length: 256 }, () => 1),
+};
+
 /** A DPR-aware, pointer-transparent, symmetric filled envelope for one visible clip window. */
 export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, compact = false, className = '' }: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hasReportedPaintRef = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    hasReportedPaintRef.current = false;
     let frame = 0;
     let intersecting = typeof IntersectionObserver === 'undefined';
     const scrollViewport = canvas.closest<HTMLElement>('.timeline-scroll');
@@ -57,6 +70,15 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, c
       const halfHeight = Math.max(0, (height - padding * 2) / 2);
       const xFor = (index: number) => visibleLeft + index / Math.max(1, envelope.length - 1) * visibleWidth;
       const amplitudes = envelope.map((column) => waveformVisualAmplitude(column.peak, column.rms) * halfHeight);
+      if (!hasReportedPaintRef.current) {
+        hasReportedPaintRef.current = true;
+        console.info('[WaveformCanvas] painted', {
+          sourceStartMs: Math.round(sourceStartMs), sourceDurationMs: Math.round(sourceDurationMs), buckets: data.peaks.length,
+          cssWidth: Math.round(width), cssHeight: Math.round(height), pixelWidth, pixelHeight, dpr,
+          visibleLeft: Math.round(visibleLeft), visibleWidth: Math.round(visibleWidth), columns: envelope.length,
+          maxAmplitude: Math.max(0, ...amplitudes), minAmplitude: Math.min(...amplitudes),
+        });
+      }
       context.beginPath();
       for (let index = 0; index < amplitudes.length; index += 1) {
         const x = xFor(index);
@@ -91,5 +113,5 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, c
     };
   }, [color, compact, data, sourceDurationMs, sourceStartMs]);
 
-  return <canvas ref={canvasRef} className={`timeline-waveform-canvas ${className}`} aria-hidden="true" />;
+  return <canvas ref={canvasRef} className={`timeline-waveform-canvas ${className}`} data-waveform-buckets={data.peaks.length} data-waveform-source-start-ms={sourceStartMs} data-waveform-source-duration-ms={sourceDurationMs} aria-hidden="true" />;
 }
