@@ -86,7 +86,15 @@ npm.cmd run dev -- --host 127.0.0.1
 
 ## 发布状态
 
-GitHub CLI 当前账号 `qazlcy` 对 `rong-24/frameyu-webav-editor` 的 API 权限为 pull=true、push=false。已实际执行 `git push --set-upstream origin feat/timeline-media-export-review`，GitHub 明确返回 `Permission to rong-24/frameyu-webav-editor.git denied to qazlcy` 和 HTTP 403。状态：推送被拒绝，远端分支未创建；PR 尚未创建，因为没有可用远端 head 分支。本地代码、四项独立提交、交接和证据完整保留，工作区干净。未新建凭据、改安全设置、强推或合并 main。需要仓库方授予现有账号写权限，或用户自行切换到已有授权账号后再继续推送和创建 PR；本轮按要求在认证不足处停止。
+此前直接推送上游被 GitHub 以 HTTP 403 拒绝（账号 qazlcy 无上游写权限）。用户随后明确批准通过个人 fork 提交 PR；已使用现有认证完成发布，没有扩大账号权限或创建新凭据。
+
+- 个人 fork：https://github.com/qazlcy/frameyu-webav-editor ，GitHub parent/source 均确认是 rong-24/frameyu-webav-editor。
+- PR：https://github.com/rong-24/frameyu-webav-editor/pull/1 。目标 rong-24/frameyu-webav-editor:main，来源 qazlcy/frameyu-webav-editor:feat/timeline-media-export-review。
+- 本地 origin 保留原上游，新增 fork remote。没有修改任一 main、覆盖已有分支或改写历史。
+- 创建时 head 为 72a70649fe1a0ce33e5d6bea655b3f2fc524d67d，包含四项功能提交与两项交接记录；本次仅追加发布说明文档提交，不新增功能。
+- PR 为 open、非草稿，merged=false，auto_merge=null；创建后核验 mergeable=true、mergeable_state=clean。
+- 创建后 GitHub 报告 no checks reported，不能把它表述为远程 CI 通过。代码验证依据仍是本轮已记录的本机 typecheck/build、95/95 单测、10/10 Chrome E2E 和真实 MP4 验证。
+- 发布前检查工作区/staged/tracked 内容：没有待提交源码改动、node_modules、dist、缓存、凭据文件或凭据文本模式；媒体证据均来自已授权的非敏感仓库夹具。原生文件选择窗口仍需人工验收。
 
 最终成片证据：
 
