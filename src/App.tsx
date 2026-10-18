@@ -9,6 +9,8 @@ import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
 import { DEFAULT_WAVEFORM_DISPLAY_SETTINGS, normaliseWaveformDisplaySettings, type WaveformDisplaySettings } from './timeline/waveformDisplay';
 import { hashVideoFile, VideoContentDeduplicator, MediaContentDeduplicator } from './editor/videoDedup';
+import { ExportDialog } from './export/ExportDialog';
+import { ExportController, getSavePicker, type ExportSettings } from './export/saveVideo';
 import { VideoThumbnailStrip } from './timeline/VideoThumbnailStrip';
 import { FULL_SOURCE_CROP, getSourceCrop, moveSourceCrop, resizeSourceCrop } from './editor/sourceCrop';
 
@@ -69,6 +71,9 @@ export default function App() {
   const timelinePreviewCacheRef = useRef(new TimelineMediaPreviewCache());
   const cacheDisposeTimerRef = useRef<number>();
   const adapterRef = useRef<WebAVAdapter>();
+  const exportControllerRef = useRef(new ExportController());
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const durationRef = useRef(0);
   const projectRef = useRef<Project>(emptyProject());
   const layoutDragRef = useRef<LayoutDrag>();
@@ -357,24 +362,21 @@ export default function App() {
     setEditor((previous) => ({ ...previous, playheadMs: start, playback: 'playing' }));
   }
 
-  async function exportVideo() {
-    if (!projectDuration || editor.status === 'exporting') return;
-    setEditor((previous) => ({ ...previous, status: 'exporting', message: '正在用 WebAV 合成 MP4…' }));
+  async function exportVideo(settings: ExportSettings) {
+    if (!projectDuration || exportBusy) return;
+    const snapshot = projectRef.current;
+    setExportBusy(true);
+    setEditor((previous) => ({ ...previous, status: 'exporting', message: settings.method === 'picker' ? '请选择保存位置…' : '正在用 WebAV 合成 MP4…' }));
     try {
-      const blob = await adapterRef.current!.export(project, (progress) => setEditor((previous) => ({ ...previous, message: `正在导出 ${(progress * 100).toFixed(0)}%` })));
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = 'frameyu-demo.mp4';
-      anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setEditor((previous) => ({ ...previous, status: 'ready', message: `导出成功（${(blob.size / 1024 / 1024).toFixed(1)} MB）` }));
+      const result = await exportControllerRef.current.start(settings, () => adapterRef.current!.export(snapshot, (progress) => setEditor((previous) => ({ ...previous, message: `正在导出 ${(progress * 100).toFixed(0)}%` }))), getSavePicker());
+      if (result === 'busy') return;
+      setEditor((previous) => ({ ...previous, status: 'ready', message: result === 'cancelled' ? '已取消保存，未开始编码。' : settings.method === 'picker' ? '视频已保存。' : '视频已交给浏览器下载。' }));
+      if (result === 'saved') setExportOpen(false);
     } catch (error) {
       console.error('[WebAV] export failed', error);
       setEditor((previous) => ({ ...previous, status: 'error', message: `导出失败：${error instanceof Error ? error.message : String(error)}` }));
-    }
+    } finally { setExportBusy(false); }
   }
-
   function targetTrack(type: TrackType) {
     const currentProject = projectRef.current;
     const selectedTrack = getTrack(currentProject, selectedTrackId);
@@ -775,7 +777,7 @@ export default function App() {
     <header className="topbar">
       <div><strong>帧语智能编辑器</strong><span className="tag">WebAV Demo</span></div>
       <div className={`status ${editor.status}`}>{editor.status === 'loading' ? '加载中' : editor.status === 'exporting' ? '导出中' : editor.status === 'error' ? '异常' : '就绪'} · {editor.message}</div>
-      <button className="primary" disabled={!projectDuration || editor.status === 'exporting'} onClick={exportVideo}>导出 MP4</button>
+      <button className="primary" disabled={!projectDuration || exportBusy || !!cropSession} onClick={() => setExportOpen(true)}>导出视频</button>
     </header>
     {!capability?.supported && <div className="capability-warning"><b>兼容性提示：</b>{capability ? capability.reasons.join(' ') : '正在检测 WebCodecs 与 WebAV…'}</div>}
     <div className="editor-body" ref={editorBodyRef}>
@@ -821,6 +823,7 @@ export default function App() {
         </div>
       </section>
       {clipContextMenu && <div className="clip-context-menu" role="menu" aria-label="片段操作菜单" style={{ left: `${clipContextMenu.x}px`, top: `${clipContextMenu.y}px` }} onPointerDown={(event) => event.stopPropagation()}><button role="menuitem" disabled={!canSplitTimelineClip(project, clipContextMenu.clipId, editor.playheadMs)} onClick={() => splitClipAtPlayhead(clipContextMenu.clipId)}>在播放头处分割</button></div>}
+      {exportOpen && <ExportDialog busy={exportBusy} progress={editor.message} onStart={(settings) => void exportVideo(settings)} onClose={() => setExportOpen(false)} />}
       {duplicateVideoImport && <DuplicateVideoDialog duplicate={duplicateVideoImport} onLocate={() => locateDuplicateVideo(duplicateVideoImport.assetId)} onClose={() => setDuplicateVideoImport(undefined)} />}
     </div>
   </main>;

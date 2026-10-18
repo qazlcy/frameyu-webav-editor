@@ -93,3 +93,13 @@ body { overflow: hidden; }
 .video-thumbnail-cell { position: relative; flex: 1; min-width: 0; overflow: hidden; border-right: 1px solid #172334; }
 .video-thumbnail-cell img { position: absolute; max-width: none; object-fit: fill; }
 .thumbnail-placeholder { display: block; padding: 18px 6px 0; color: #a7b9ce; font-size: 10px; }
+
+.timeline-toolbar > select, .export-dialog input, .export-dialog select { border: 1px solid #3d4d68; border-radius: 5px; color: #dce7fa; background: #263348; padding: 5px; }
+.export-dialog { width: min(440px, calc(100vw - 48px)); padding: 24px; border: 1px solid #4c608a; border-radius: 10px; background: #1c2433; color: #edf3ff; box-shadow: 0 18px 52px #000a; }
+.export-dialog::backdrop { background: #060912b8; }
+.export-dialog h2 { margin-top: 0; }
+.export-dialog label { display: grid; gap: 7px; margin: 16px 0 7px; font-size: 13px; }
+.export-dialog p, .export-dialog small { font-size: 12px; color: #b9c6da; line-height: 1.6; overflow-wrap: anywhere; }
+.export-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.export-actions button { padding: 8px 16px; border: 1px solid #4c608a; border-radius: 6px; background: #293446; color: #edf3ff; }
+.export-actions .primary { background: #5368ea; }
