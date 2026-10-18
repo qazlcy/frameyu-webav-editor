@@ -162,7 +162,7 @@ SDK 类型来源：`node_modules/@webav/av-canvas/dist/av-canvas.d.ts` 与 `node
 | 5.2.4 音频与导出回归 | 已实现 / 待真实媒体验收 | 读取 WebAV 1.2.8 源码确认 `MP4Clip(stream, { audio: { volume } })` 会将该视频原声 PCM 乘以音量；视频静音传入 0。每个视频仅创建一个含画面和原声的 Sprite，不额外创建 AudioClip，避免重复声音；背景音乐、音效与字幕仍走原有独立 Sprite。 |
 | 自动检查 | 通过 | `npm run typecheck`、Vitest（28 项）、`npm run build` 通过；工作台 Playwright 3 项通过。真实媒体导出 E2E 因远程 Chromium 缺完整 WebCodecs 而 skipped。 |
 
-图层规则：视频轨按 `Track.order` 从小到大对应 `zIndex 0…n`；数值较大的轨绘制在更上方。字幕固定为 `zIndex 10000`，因此始终位于所有视频之上。视频几何、透明度、静音与音量均属于工程快照；预览同步和 `export(project)` 都使用该同一快照。
+图层规则（Phase 7.1 更新）：视频轨 `Track.order` 从小到大即时间轴 UI 从上到下；通过唯一的 `getVideoLayerZIndex(project, trackId)` 反向映射为 WebAV `zIndex`，因此数值较小、UI 更上方的视频轨拥有更高图层并覆盖下方轨道。字幕固定为 `zIndex 10000`，始终位于所有视频之上。图层排序只影响视频画面，不影响音乐/音效混音；预览同步和 `Combinator` 导出使用同一个工程快照与映射函数。
 
 未验证：尚未能在远程浏览器实际解码两个带声视频并生成 MP4，因而视频 A/B 的重叠画面、真实混音、裁剪后原声、层级遮挡及导出可播放性必须由本地 Chrome/Edge 按 README 第 4～6、17 项确认，不能将逻辑/E2E 结果替代这些媒体结论。
 

@@ -162,7 +162,7 @@ describe('multi-video project commands', () => {
     expect(first.videoLayout).toEqual(defaultVideoLayout(project, project.assets[0]));
   });
 
-  it('preserves video layout when crossing video tracks and maps track order to zIndex', () => {
+  it('preserves video layout when crossing video tracks and maps upper timeline tracks to higher zIndex', () => {
     let project = addAsset(emptyProject(), video('a', 5000));
     project = appendVideoClip(project, project.assets[0]);
     project = addTrack(project, 'video', 'video-2');
@@ -172,11 +172,25 @@ describe('multi-video project commands', () => {
     project = moveClipToCompatibleTrack(project, original.id, 1200, 'video-2');
     const moved = project.clips[0];
     expect(moved).toMatchObject({ trackId: 'video-2', startMs: 1200, sourceStartMs: 0, durationMs: 5000, videoLayout: { mode: 'pip', x: 800, opacity: 0.6 } });
-    expect(getVideoLayerZIndex(project, 'video')).toBe(0);
-    expect(getVideoLayerZIndex(project, 'video-2')).toBe(1);
-    project = reorderTrack(project, 'video-2', 0);
-    expect(getVideoLayerZIndex(project, 'video-2')).toBe(0);
+    // The original V1 is visually above the newly appended V2, therefore V1 covers V2.
     expect(getVideoLayerZIndex(project, 'video')).toBe(1);
+    expect(getVideoLayerZIndex(project, 'video-2')).toBe(0);
+    project = reorderTrack(project, 'video-2', 0);
+    expect(getVideoLayerZIndex(project, 'video-2')).toBe(1);
+    expect(getVideoLayerZIndex(project, 'video')).toBe(0);
+  });
+
+  it('maps three video tracks uniquely from UI top-to-bottom into WebAV top-to-bottom layers', () => {
+    let project = emptyProject();
+    project = addTrack(project, 'video', 'video-2');
+    project = addTrack(project, 'video', 'video-3');
+    expect(getVideoLayerZIndex(project, 'video')).toBe(2);
+    expect(getVideoLayerZIndex(project, 'video-2')).toBe(1);
+    expect(getVideoLayerZIndex(project, 'video-3')).toBe(0);
+    project = reorderTrack(project, 'video-3', 0);
+    expect(getVideoLayerZIndex(project, 'video-3')).toBe(2);
+    expect(getVideoLayerZIndex(project, 'video')).toBe(1);
+    expect(getVideoLayerZIndex(project, 'video-2')).toBe(0);
   });
 
   it('keeps video layout in project canvas coordinates and preserves aspect ratio when resized', () => {

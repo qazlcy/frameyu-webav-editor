@@ -271,6 +271,9 @@ export function setVideoLayoutMode(project: Project, clipId: string, mode: Extra
 }
 
 export function getVideoLayerZIndex(project: Project, trackId: string): number {
-  const index = project.tracks.filter((track) => track.type === 'video').sort((left, right) => left.order - right.order).findIndex((track) => track.id === trackId);
-  return Math.max(0, index);
+  // Timeline order is UI top-to-bottom. The visually upper video track must also
+  // cover lower tracks, so invert its index into WebAV's ascending zIndex space.
+  const videoTracks = project.tracks.filter((track) => track.type === 'video').sort((left, right) => left.order - right.order);
+  const index = videoTracks.findIndex((track) => track.id === trackId);
+  return index < 0 ? 0 : videoTracks.length - 1 - index;
 }

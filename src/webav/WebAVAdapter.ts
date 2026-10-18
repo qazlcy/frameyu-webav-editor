@@ -182,7 +182,9 @@ export class WebAVAdapter {
     sprite.rect.w = layout.width;
     sprite.rect.h = layout.height;
     sprite.opacity = layout.opacity;
-    // Track order is bottom-to-top: a later video track gets the higher zIndex and covers earlier tracks.
+    // Track order is UI top-to-bottom. `getVideoLayerZIndex` inverts that order so
+    // the upper timeline video track gets the higher WebAV zIndex. This is called
+    // for an unchanged media signature too, so reordering tracks does not rebuild media.
     sprite.zIndex = getVideoLayerZIndex(project, clip.trackId);
     sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs), playbackRate: getClipPlaybackRate(clip) };
   }
