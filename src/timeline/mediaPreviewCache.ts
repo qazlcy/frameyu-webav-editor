@@ -152,6 +152,10 @@ export class TimelineMediaPreviewCache {
   private thumbnails = new Map<string, VideoThumbnailData>();
   private waveformTasks = new Map<string, Promise<WaveformData | undefined>>();
   private thumbnailTasks = new Map<string, Promise<VideoThumbnailData>>();
+  private thumbnailWindows = new Map<string, VideoThumbnailData>();
+  private thumbnailErrors = new Set<string>();
+  private thumbnailQueue = new AnalysisTaskQueue();
+  private thumbnailVersions = new Map<string, number>();
   private waveformErrors = new Map<string, string>();
   private waveformStatus = new Map<string, WaveformAnalysisStatus>();
   private waveformVersions = new Map<string, number>();
@@ -275,6 +279,14 @@ export class TimelineMediaPreviewCache {
 
   /** WebCodecs decode cannot be cancelled midway; invalidated results are ignored. */
   forgetAsset(assetId: string, type: 'audio' | 'video' = 'audio') {
+    this.thumbnailVersions.set(assetId, (this.thumbnailVersions.get(assetId) ?? 0) + 1);
+    for (const [key, data] of this.thumbnailWindows) {
+      if (!key.startsWith(`${assetId}:`)) continue;
+      data.frames.forEach((frame) => URL.revokeObjectURL(frame.url));
+      this.thumbnailWindows.delete(key);
+    }
+    this.thumbnails.delete(assetId);
+    for (const key of this.thumbnailErrors) if (key.startsWith(`${assetId}:`)) this.thumbnailErrors.delete(key);
     const key = waveformKey(type, assetId);
     this.waveformVersions.set(key, (this.waveformVersions.get(key) ?? 0) + 1);
     this.waveforms.delete(key);
@@ -294,19 +306,44 @@ export class TimelineMediaPreviewCache {
     this.pushDiagnostic({ at: performance.now(), assetId: asset.id, assetName: asset.name, assetType: asset.type, durationMs: asset.durationMs, attempt: status.attempt, phase: 'ui-rendered', message: `界面已更新（${uiUpdateMs.toFixed(1)} ms）`, timings: { ...status.timings } });
   }
 
-  ensureThumbnails(asset: Asset, file: File): Promise<VideoThumbnailData> {
-    const cached = this.thumbnails.get(asset.id);
+  ensureThumbnails(asset: Asset, file: File, range = { startMs: 0, durationMs: asset.durationMs }): Promise<VideoThumbnailData> {
+    // Stable 8-second windows at ordinary zoom; coarser power-of-two windows
+    // bound long-video requests to at most 33 decoded frames each.
+    const span = 8000 * 2 ** Math.max(0, Math.ceil(Math.log2(Math.max(1, range.durationMs / 8000))));
+    const startMs = Math.floor(Math.max(0, range.startMs) / span) * span;
+    const endMs = Math.min(asset.durationMs, Math.ceil((range.startMs + range.durationMs) / span) * span);
+    const key = `${asset.id}:${startMs}:${endMs}`;
+    const cached = this.thumbnailWindows.get(key);
     if (cached) return Promise.resolve(cached);
-    const pending = this.thumbnailTasks.get(asset.id);
+    if (this.thumbnailErrors.has(key) || this.disposed) return Promise.resolve({ durationMs: asset.durationMs, frames: [] });
+    const pending = this.thumbnailTasks.get(key);
     if (pending) return pending;
-    const task = this.loadThumbnails(asset, file).finally(() => this.thumbnailTasks.delete(asset.id));
-    this.thumbnailTasks.set(asset.id, task);
+    const version = this.thumbnailVersions.get(asset.id) ?? 0;
+    const task = this.thumbnailQueue.enqueue(() => this.loadThumbnails(asset, file, startMs, endMs)).then((data) => {
+      if (this.disposed || version !== (this.thumbnailVersions.get(asset.id) ?? 0)) {
+        data.frames.forEach((frame) => URL.revokeObjectURL(frame.url));
+        return { durationMs: asset.durationMs, frames: [] };
+      }
+      this.thumbnailWindows.set(key, data);
+      // Eight windows per source; repeated clips share URLs, crop never duplicates them.
+      const keys = [...this.thumbnailWindows.keys()].filter((item) => item.startsWith(`${asset.id}:`));
+      for (const expired of keys.slice(0, Math.max(0, keys.length - 8))) {
+        this.thumbnailWindows.get(expired)?.frames.forEach((frame) => URL.revokeObjectURL(frame.url));
+        this.thumbnailWindows.delete(expired);
+      }
+      const frames = [...this.thumbnailWindows.entries()].filter(([item]) => item.startsWith(`${asset.id}:`)).flatMap(([, window]) => window.frames);
+      this.thumbnails.set(asset.id, { durationMs: asset.durationMs, frames });
+      for (const listener of this.listeners) listener(asset);
+      return data;
+    }).catch((error: unknown) => { this.thumbnailErrors.add(key); throw error; }).finally(() => this.thumbnailTasks.delete(key));
+    this.thumbnailTasks.set(key, task);
     return task;
   }
 
   dispose() {
     this.disposed = true;
     this.waveformQueue.dispose();
+    this.thumbnailQueue.dispose();
     for (const data of this.thumbnails.values()) for (const frame of data.frames) URL.revokeObjectURL(frame.url);
     this.waveforms.clear();
     this.waveformSummaries.clear();
@@ -314,6 +351,8 @@ export class TimelineMediaPreviewCache {
     this.waveformStatus.clear();
     this.analysisAssets.clear();
     this.thumbnails.clear();
+    this.thumbnailWindows.clear();
+    this.thumbnailErrors.clear();
     this.listeners.clear();
   }
 
@@ -453,17 +492,16 @@ export class TimelineMediaPreviewCache {
     }
   }
 
-  private async loadThumbnails(asset: Asset, file: File): Promise<VideoThumbnailData> {
+  private async loadThumbnails(asset: Asset, file: File, startMs: number, endMs: number): Promise<VideoThumbnailData> {
     await nextIdlePeriod();
     const clip = new MP4Clip(file.stream());
     try {
       const meta = await clip.ready;
-      const stepUs = Math.max(msToUs(500), Math.round(meta.duration / 16));
-      const rendered = await clip.thumbnails(160, { start: 0, end: meta.duration, step: stepUs });
+      const start = msToUs(startMs);
+      const end = Math.min(meta.duration - 1, msToUs(endMs));
+      const stepUs = Math.max(msToUs(500), Math.ceil((end - start) / 32));
+      const rendered = await clip.thumbnails(160, { start, end, step: stepUs });
       const data: VideoThumbnailData = { durationMs: asset.durationMs, frames: rendered.map(({ ts, img }) => ({ timeMs: usToMs(ts), url: URL.createObjectURL(img) })) };
-      if (this.disposed) {
-        for (const frame of data.frames) URL.revokeObjectURL(frame.url);
-      } else this.thumbnails.set(asset.id, data);
       return data;
     } finally {
       clip.destroy();
