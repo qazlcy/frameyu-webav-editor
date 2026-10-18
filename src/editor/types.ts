@@ -14,6 +14,9 @@ export interface Asset {
   durationMs: number;
   width?: number;
   height?: number;
+  /** SHA-256 and byte size are session-local import fingerprints; only videos use them in Phase 7.3. */
+  fileSize?: number;
+  contentHash?: string;
   /** Audio assets are deliberately classified at import time; older projects treat an unset value as music. */
   audioKind?: AudioKind;
 }

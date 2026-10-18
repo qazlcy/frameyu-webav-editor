@@ -8,6 +8,7 @@ import { scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timel
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
 import { DEFAULT_WAVEFORM_DISPLAY_SETTINGS, normaliseWaveformDisplaySettings, type WaveformDisplaySettings } from './timeline/waveformDisplay';
+import { hashVideoFile, VideoContentDeduplicator } from './editor/videoDedup';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
@@ -19,6 +20,7 @@ type LayoutState = WorkspaceLayout;
 type MaterialFilter = 'all' | 'video' | 'music' | 'sfx' | 'caption';
 type LayoutDrag = { kind: 'asset' | 'property' | 'timeline'; pointerId: number; startClient: number; startValue: number };
 type ClipContextMenu = { clipId: string; x: number; y: number };
+type DuplicateVideoImport = { assetId: string; existingName: string; importedName: string };
 
 type DragState =
   | { kind: 'clip'; pointerId: number; clip: TimelineClip; mode: 'move' | 'left' | 'right'; pointerStartMs: number }
@@ -57,6 +59,7 @@ export default function App() {
   const sfxInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const assetFilesRef = useRef(new Map<string, File>());
+  const videoDedupRef = useRef(new VideoContentDeduplicator(hashVideoFile));
   const timelinePreviewCacheRef = useRef(new TimelineMediaPreviewCache());
   const cacheDisposeTimerRef = useRef<number>();
   const adapterRef = useRef<WebAVAdapter>();
@@ -82,6 +85,7 @@ export default function App() {
   const [waveformDisplaySettings, setWaveformDisplaySettings] = useState<WaveformDisplaySettings>(readWaveformDisplaySettings);
   const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
+  const [duplicateVideoImport, setDuplicateVideoImport] = useState<DuplicateVideoImport>();
 
   projectRef.current = project;
   const projectDuration = getProjectDuration(project);
@@ -221,10 +225,22 @@ export default function App() {
 
   async function importVideo(file: File) {
     const fileSelectedAt = performance.now();
-    setEditor((previous) => ({ ...previous, status: 'loading', message: '正在解析视频…' }));
+    let reservation: { abort: () => void; commit: (assetId: string) => void } | undefined;
+    setEditor((previous) => ({ ...previous, status: 'loading', message: '正在后台计算视频内容指纹…' }));
     try {
+      const claim = await videoDedupRef.current.claim(file, projectRef.current.assets);
+      console.info('[VideoDedup]', { fileName: file.name, fileSize: file.size, candidateCount: claim.candidateCount, hashDurationMs: claim.hashDurationMs, outcome: claim.kind });
+      if (claim.kind === 'duplicate') {
+        const existing = projectRef.current.assets.find((asset) => asset.id === claim.assetId);
+        if (!existing) throw new Error('重复素材的既有引用已不可用，请重新导入。');
+        setDuplicateVideoImport({ assetId: existing.id, existingName: existing.name, importedName: file.name });
+        setEditor((previous) => ({ ...previous, status: 'ready', message: `“${file.name}”与已有素材内容相同，未重复导入。` }));
+        return;
+      }
+      reservation = claim;
+      setEditor((previous) => ({ ...previous, status: 'loading', message: '视频指纹完成，正在解析媒体…' }));
       const info = await adapterRef.current!.inspectFile(file, 'video');
-      const asset: Asset = { id: makeId('video'), name: file.name, type: 'video', mimeType: file.type, ...info };
+      const asset: Asset = { id: makeId('video'), name: file.name, type: 'video', mimeType: file.type, fileSize: claim.fingerprint.fileSize, contentHash: claim.fingerprint.contentHash, ...info };
       adapterRef.current!.registerAsset(asset, file);
       assetFilesRef.current.set(asset.id, file);
       setRuntimeAssetVersion((version) => version + 1);
@@ -234,11 +250,24 @@ export default function App() {
         const withAsset = addAsset(previous, asset);
         return firstVideo ? appendVideoClip(withAsset, asset) : withAsset;
       });
+      reservation.commit(asset.id);
+      reservation = undefined;
       setEditor((previous) => ({ ...previous, playheadMs: 0, status: 'ready', message: `已导入 ${file.name}` }));
     } catch (error) {
+      reservation?.abort();
       console.error('[WebAV] video import failed', error);
-      setEditor((previous) => ({ ...previous, status: 'error', message: `视频无法解码：${error instanceof Error ? error.message : String(error)}` }));
+      setEditor((previous) => ({ ...previous, status: 'error', message: `视频导入失败：${error instanceof Error ? error.message : String(error)}` }));
     }
+  }
+
+  function locateDuplicateVideo(assetId: string) {
+    setMaterialFilter('video');
+    setDuplicateVideoImport(undefined);
+    requestAnimationFrame(() => {
+      const card = document.getElementById(`asset-card-${assetId}`);
+      card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      (card as HTMLElement | null)?.focus();
+    });
   }
 
   async function importAudio(file: File, audioKind: AudioKind) {
@@ -683,6 +712,7 @@ export default function App() {
         </div>
       </section>
       {clipContextMenu && <div className="clip-context-menu" role="menu" aria-label="片段操作菜单" style={{ left: `${clipContextMenu.x}px`, top: `${clipContextMenu.y}px` }} onPointerDown={(event) => event.stopPropagation()}><button role="menuitem" disabled={!canSplitTimelineClip(project, clipContextMenu.clipId, editor.playheadMs)} onClick={() => splitClipAtPlayhead(clipContextMenu.clipId)}>在播放头处分割</button></div>}
+      {duplicateVideoImport && <DuplicateVideoDialog duplicate={duplicateVideoImport} onLocate={() => locateDuplicateVideo(duplicateVideoImport.assetId)} onClose={() => setDuplicateVideoImport(undefined)} />}
     </div>
   </main>;
 }
@@ -692,13 +722,23 @@ function MaterialAssetCard({ asset, previewUrl, projectDuration, analysisStatus,
   const kindLabel = asset.type === 'video' ? '视频' : audioKind === 'music' ? '音乐' : '音效';
   const resolution = asset.type === 'video' && asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : '';
   const analysisLabel = analysisStatus?.phase === 'queued' ? '等待分析' : analysisStatus?.phase === 'decoding' ? '正在解码' : analysisStatus?.phase === 'sampling' ? '正在生成波形' : analysisStatus?.phase === 'ready' ? '波形分析完成' : analysisStatus?.phase === 'no-audio' ? '无音轨' : analysisStatus?.phase === 'failed' ? '波形分析失败' : '尚未调度';
-  return <article className={`asset-card ${asset.type === 'video' ? 'video' : audioKind}`}>
+  return <article id={`asset-card-${asset.id}`} tabIndex={-1} className={`asset-card ${asset.type === 'video' ? 'video' : audioKind}`}>
     <span className="asset-icon" aria-hidden="true">{asset.type === 'video' ? '▣' : audioKind === 'music' ? '♫' : '✦'}</span>
     <div className="asset-card-body"><b title={asset.name}>{asset.name}</b><small>{kindLabel} · {formatTime(asset.durationMs)}{resolution}</small>
       <div className={`waveform-analysis-status ${analysisStatus?.phase ?? 'unscheduled'}`} aria-label={`${asset.name}波形${analysisLabel}`}><span>{analysisStatus?.phase === 'decoding' || analysisStatus?.phase === 'sampling' ? '◌ ' : ''}{analysisLabel}</span>{analysisStatus?.phase === 'unscheduled' && <small title={analysisStatus.message}>{analysisStatus.message || '尚未收到分析请求。'}</small>}{analysisStatus?.phase === 'failed' && <><small title={analysisStatus.error}>原因：{analysisStatus.error || '未知错误'}</small><button className="secondary" onClick={onRetryWaveform}>重新分析</button></>}</div>
       {asset.type === 'video' ? <button onClick={onAddVideo}>+ 视频轨</button> : <><div className="asset-card-actions"><button onClick={() => onAddAudio(audioKind)}>+ {audioKind === 'music' ? '音乐' : '音效'}</button><button className="secondary" onClick={() => onAddAudio(audioKind === 'music' ? 'sfx' : 'music')}>作为{audioKind === 'music' ? '音效' : '音乐'}</button></div>{previewUrl ? <audio aria-label={`试听 ${asset.name}`} controls preload="metadata" src={previewUrl} /> : <small className="audio-unavailable">本会话未保留试听源</small>}</>}
     </div>
   </article>;
+}
+
+function DuplicateVideoDialog({ duplicate, onLocate, onClose }: { duplicate: DuplicateVideoImport; onLocate: () => void; onClose: () => void }) {
+  return <div className="duplicate-video-backdrop" role="presentation" onPointerDown={onClose}>
+    <section className="duplicate-video-dialog" role="dialog" aria-modal="true" aria-labelledby="duplicate-video-title" onPointerDown={(event) => event.stopPropagation()}>
+      <h2 id="duplicate-video-title">检测到重复素材</h2>
+      <p>当前文件“{duplicate.importedName}”与素材库中的“{duplicate.existingName}”内容相同，无需再次导入。</p>
+      <div><button className="primary" onClick={onLocate}>定位已有素材</button><button className="secondary" onClick={onClose}>关闭</button></div>
+    </section>
+  </div>;
 }
 
 function Divider({ kind, onPointerDown, onDoubleClick }: { kind: LayoutDrag['kind']; onPointerDown: (event: React.PointerEvent, kind: LayoutDrag['kind']) => void; onDoubleClick: () => void }) {

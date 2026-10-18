@@ -24,6 +24,14 @@
 
 在现有 `videoLayout` 上新增八个画布控制点（四角、四边中点）与可测试的 `resizedVideoLayout()` 锚点计算。图层内部可移动；锁定比例时角点锚定对角、边点调整另一维，解除后宽/高独立变化。右侧属性与画布共用同一 `videoLayout` 命令路径，坐标始终是 1280×720 工程坐标。新增 Fit、Fill、全画面、画中画和恢复默认入口：Fit（默认/恢复）完整等比适配，Fill 用可超出输出画布的等比 Sprite rect 覆盖画布，全画面以 1280×720 rect 直接填满。Fill 属于真实预览/导出布局裁切，不是源素材裁切，Phase 6.3 sourceCrop 并未在本期实现。布局更新不改变时间、源音频、倍速、静音或图层关系；Adapter 对仅布局变化保留现有媒体对象。新增锚点和预设单测后，`npm run typecheck`、Vitest 66/66、生产构建和本地库 Playwright（4 passed / 1 skipped）均通过。真实拖拽、两视频独立调整及 MP4 几何一致性待本地 Chrome/Edge 验收。
 
+## Phase 7.3：视频素材内容去重
+
+分支：`phase7-video-content-dedup`。仅视频素材启用去重；`Asset` 增加可序列化的 `fileSize` 与 `contentHash`，用于按 Asset ID 缓存导入指纹。导入时先以大小筛出候选素材，再在后台 Worker 以 SHA-256 核实内容：同内容、不同文件名会被识别，同名不同内容不会被拒绝。确认重复前不会调用 `inspectFile`、`registerAsset`、Object URL 或波形/媒体缓存，因此不会留下孤立运行时资源。
+
+`VideoContentDeduplicator` 对哈希建立保留席位：多个相同内容文件同时导入时，首个任务可完成注册；其他任务等待其提交后转为重复，失败则释放席位供后续任务继续。发现重复时工作台显示可定位既有素材的对话框，且不会自动加入时间轴；已有 Asset 依然可反复创建 TimelineClip。Worker 规避主线程摘要计算；但原生 WebCrypto SHA-256 需要完整 `ArrayBuffer`，超大文件仍有 Worker 内存开销，未来若需要真正分块流式哈希应引入专门的增量 SHA-256/WASM 实现。
+
+自动检查：新增 4 项去重单测，覆盖内容相同改名、同名异内容、并发同内容、失败后重试；当前 `npm run typecheck` 与 Vitest 70/70 已通过。待本阶段最终构建/E2E 后补录；远程 Chromium 的真实视频导入/导出仍因 WebCodecs 缺失不能标为通过，本地 Chrome/Edge 请按 README 第 27 项验收。
+
 ## 阶段 A：环境与 API
 
 | 项目 | 结果 | 记录 |
