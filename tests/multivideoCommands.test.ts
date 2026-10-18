@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, defaultVideoLayout, deleteEmptyTrack, getProjectDuration, getVideoLayerZIndex, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizeTrack, setVideoLayoutMode, trimProjectClip, updateVideoLayout } from '../src/editor/commands';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, defaultVideoLayout, deleteEmptyTrack, getProjectDuration, getVideoLayerZIndex, moveClipToCompatibleTrack, moveProjectClip, removeClip, renameTrack, reorderTrack, resizedVideoLayout, resizeTrack, setVideoLayoutMode, trimProjectClip, updateVideoLayout } from '../src/editor/commands';
 import { MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, emptyProject, type Asset } from '../src/editor/types';
 
 const video = (id: string, durationMs: number): Asset => ({ id, name: `${id}.mp4`, type: 'video', mimeType: 'video/mp4', durationMs, width: 1280, height: 720 });
@@ -203,6 +203,34 @@ describe('multi-video project commands', () => {
     expect(project.clips[0].videoLayout).toMatchObject({ width: 480, height: 270 });
     project = updateVideoLayout(project, clipId, { x: 2000, y: 1000, opacity: 3 });
     expect(project.clips[0].videoLayout).toMatchObject({ x: 800, y: 450, opacity: 1 });
+  });
+
+  it('calculates anchored eight-handle resizing with locked and unlocked aspect ratios', () => {
+    const project = emptyProject();
+    const asset = video('a', 5000);
+    const layout = { mode: 'custom' as const, x: 320, y: 180, width: 320, height: 180, opacity: 1, keepAspectRatio: true };
+    const northwest = resizedVideoLayout(project, asset, layout, 'nw', -40, -10);
+    expect(northwest).toMatchObject({ x: 280, y: 158, width: 360, height: 203, keepAspectRatio: true, mode: 'custom' });
+    expect(northwest.x + northwest.width).toBe(640);
+    expect(northwest.y + northwest.height).toBe(361);
+    const north = resizedVideoLayout(project, asset, layout, 'n', 0, -45);
+    expect(north.width / north.height).toBeCloseTo(16 / 9, 2);
+    expect(north.y + north.height).toBe(360);
+    const unlocked = resizedVideoLayout(project, asset, { ...layout, keepAspectRatio: false }, 'e', 80, 0);
+    expect(unlocked).toMatchObject({ x: 320, y: 180, width: 400, height: 180, keepAspectRatio: false });
+  });
+
+  it('keeps fit within the canvas and lets fill cover the output canvas without source-media mutation', () => {
+    const project = emptyProject();
+    const portrait = { ...video('portrait', 5000), width: 800, height: 600 };
+    expect(defaultVideoLayout(project, portrait, 'fit')).toMatchObject({ mode: 'fit', x: 160, y: 0, width: 960, height: 720, keepAspectRatio: true });
+    const fill = defaultVideoLayout(project, portrait, 'fill');
+    expect(fill).toMatchObject({ mode: 'fill', x: 0, y: -120, width: 1280, height: 960, keepAspectRatio: true });
+    let withClip = addAsset(project, portrait);
+    withClip = appendVideoClip(withClip, portrait);
+    withClip = setVideoLayoutMode(withClip, withClip.clips[0].id, 'fill');
+    expect(withClip.clips[0].videoLayout).toMatchObject({ mode: 'fill', y: -120, width: 1280, height: 960 });
+    expect(defaultVideoLayout(project, portrait, 'full')).toMatchObject({ mode: 'full', x: 0, y: 0, width: 1280, height: 720, keepAspectRatio: false });
   });
 
   it('protects the final or non-empty video track from deletion', () => {

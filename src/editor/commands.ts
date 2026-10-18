@@ -1,4 +1,4 @@
-import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoLayoutMode } from './types';
+import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoLayoutMode, type VideoResizeHandle } from './types';
 import { MIN_DURATION_MS, clamp, getClipPlaybackRate, getClipSourceDurationMs, moveClip, snapMs, sourceOffsetForTimelineOffset, timelineDurationForSourceDuration, trimLeft, trimRight } from './timelineMath';
 
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
@@ -49,13 +49,23 @@ function videoOverlaps(project: Project, candidate: TimelineClip): boolean {
   return getVideoClips(project).some((clip) => clip.id !== candidate.id && clip.trackId === candidate.trackId && candidate.startMs < clip.startMs + clip.durationMs && clip.startMs < candidate.startMs + candidate.durationMs);
 }
 
-export function defaultVideoLayout(project: Project, asset?: Asset, mode: VideoLayoutMode = 'full'): VideoLayout {
+export function defaultVideoLayout(project: Project, asset?: Asset, mode: VideoLayoutMode = 'fit'): VideoLayout {
   const aspect = asset?.width && asset?.height ? asset.width / asset.height : 16 / 9;
   if (mode === 'pip') {
     const width = Math.round(project.width / 4);
     const height = Math.round(width / aspect);
     return { mode, x: project.width - width - 32, y: 32, width, height, opacity: 1, keepAspectRatio: true };
   }
+  if (mode === 'fill') {
+    // A rect larger than the output canvas is clipped by AVCanvas/Combinator,
+    // producing a real output-frame cover without claiming to crop source media.
+    const scale = Math.max(project.width / (asset?.width ?? project.width), project.height / (asset?.height ?? project.height));
+    const width = Math.round((asset?.width ?? project.width) * scale);
+    const height = Math.round((asset?.height ?? project.height) * scale);
+    return { mode, x: Math.round((project.width - width) / 2), y: Math.round((project.height - height) / 2), width, height, opacity: 1, keepAspectRatio: true };
+  }
+  if (mode === 'full') return { mode, x: 0, y: 0, width: project.width, height: project.height, opacity: 1, keepAspectRatio: false };
+  // `fit` is the default: retain the entire source frame with possible letterboxing.
   const scale = Math.min(project.width / (asset?.width ?? project.width), project.height / (asset?.height ?? project.height));
   const width = Math.round((asset?.width ?? project.width) * scale);
   const height = Math.round((asset?.height ?? project.height) * scale);
@@ -256,18 +266,79 @@ export function updateVideoLayout(project: Project, clipId: string, patch: Parti
   // Corner dragging supplies both dimensions; width is the canonical edge when aspect lock is on.
   if (next.keepAspectRatio && patch.width !== undefined) next.height = Math.round(next.width / aspect);
   else if (next.keepAspectRatio && patch.height !== undefined) next.width = Math.round(next.height * aspect);
-  next.width = clamp(Math.round(next.width), 40, project.width);
-  next.height = clamp(Math.round(next.height), 40, project.height);
-  next.x = clamp(Math.round(next.x), 0, project.width - next.width);
-  next.y = clamp(Math.round(next.y), 0, project.height - next.height);
+  const isCoverLayout = next.mode === 'fill';
+  const maxDimension = Math.max(project.width, project.height) * 4;
+  next.width = clamp(Math.round(next.width), 40, isCoverLayout ? maxDimension : project.width);
+  next.height = clamp(Math.round(next.height), 40, isCoverLayout ? maxDimension : project.height);
+  next.x = isCoverLayout
+    ? clamp(Math.round(next.x), project.width - next.width, 0)
+    : clamp(Math.round(next.x), 0, project.width - next.width);
+  next.y = isCoverLayout
+    ? clamp(Math.round(next.y), project.height - next.height, 0)
+    : clamp(Math.round(next.y), 0, project.height - next.height);
   next.opacity = clamp(next.opacity, 0, 1);
   return withClips(project, project.clips.map((item) => item.id === clipId ? { ...item, videoLayout: next } : item));
 }
 
-export function setVideoLayoutMode(project: Project, clipId: string, mode: Extract<VideoLayoutMode, 'full' | 'pip'>): Project {
+export function setVideoLayoutMode(project: Project, clipId: string, mode: Extract<VideoLayoutMode, 'full' | 'fit' | 'fill' | 'pip'>): Project {
   const clip = project.clips.find((item) => item.id === clipId);
   if (!clip || clip.type !== 'video') return project;
   return updateVideoLayout(project, clipId, defaultVideoLayout(project, clip.assetId ? getAsset(project, clip.assetId) : undefined, mode));
+}
+
+/** Calculates an anchored canvas-space resize from one of the eight preview handles. */
+export function resizedVideoLayout(project: Project, asset: Asset | undefined, layout: VideoLayout, handle: VideoResizeHandle, deltaX: number, deltaY: number): VideoLayout {
+  const left = layout.x;
+  const top = layout.y;
+  const right = layout.x + layout.width;
+  const bottom = layout.y + layout.height;
+  const west = handle.includes('w');
+  const east = handle.includes('e');
+  const north = handle.includes('n');
+  const south = handle.includes('s');
+  const minSize = 40;
+  const aspect = asset?.width && asset.height ? asset.width / asset.height : layout.width / layout.height;
+  let x = left;
+  let y = top;
+  let width = layout.width;
+  let height = layout.height;
+
+  if (layout.keepAspectRatio) {
+    let nextWidth = width;
+    if (west || east) {
+      const widthDelta = west ? -deltaX : deltaX;
+      const heightDelta = north ? -deltaY : south ? deltaY : 0;
+      const candidateWidth = width + widthDelta;
+      const candidateHeight = height + heightDelta;
+      nextWidth = Math.abs(widthDelta / width) >= Math.abs(heightDelta / height)
+        ? candidateWidth
+        : candidateHeight * aspect;
+    } else if (north || south) {
+      nextWidth = (height + (north ? -deltaY : deltaY)) * aspect;
+    }
+    width = Math.max(minSize, nextWidth);
+    height = Math.max(minSize, width / aspect);
+    if (west) x = right - width;
+    if (north) y = bottom - height;
+    if (!west && !east) x = left + (layout.width - width) / 2;
+    if (!north && !south) y = top + (layout.height - height) / 2;
+  } else {
+    if (west) { x = left + deltaX; width = right - x; }
+    if (east) width = layout.width + deltaX;
+    if (north) { y = top + deltaY; height = bottom - y; }
+    if (south) height = layout.height + deltaY;
+    if (width < minSize) { width = minSize; if (west) x = right - width; }
+    if (height < minSize) { height = minSize; if (north) y = bottom - height; }
+  }
+
+  return {
+    ...layout,
+    mode: 'custom',
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
 }
 
 export function getVideoLayerZIndex(project: Project, trackId: string): number {

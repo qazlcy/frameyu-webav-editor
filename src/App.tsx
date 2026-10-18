@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, canSetClipPlaybackRate, canSplitTimelineClip, defaultVideoLayout, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, PLAYBACK_RATE_PRESETS, removeClip, renameTrack, reorderTrack, resizeTrack, setClipPlaybackRate, setVideoLayoutMode, splitTimelineClip, trimProjectClip, updateClip, updateVideoLayout } from './editor/commands';
-import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type EditorState, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout } from './editor/types';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, canSetClipPlaybackRate, canSplitTimelineClip, defaultVideoLayout, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, PLAYBACK_RATE_PRESETS, removeClip, renameTrack, reorderTrack, resizedVideoLayout, resizeTrack, setClipPlaybackRate, setVideoLayoutMode, splitTimelineClip, trimProjectClip, updateClip, updateVideoLayout } from './editor/commands';
+import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type EditorState, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoResizeHandle } from './editor/types';
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, getClipSourceDurationMs, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
@@ -25,7 +25,12 @@ type DragState =
   | { kind: 'playhead'; pointerId: number }
   | { kind: 'track'; pointerId: number; trackId: string }
   | { kind: 'track-height'; pointerId: number; trackId: string; startHeight: number; startClientY: number }
-  | { kind: 'canvas-video'; pointerId: number; clipId: string; mode: 'move' | 'resize'; pointerStartX: number; pointerStartY: number; layout: VideoLayout };
+  | { kind: 'canvas-video'; pointerId: number; clipId: string; mode: 'move' | VideoResizeHandle; pointerStartX: number; pointerStartY: number; layout: VideoLayout };
+
+const VIDEO_RESIZE_HANDLES: ReadonlyArray<{ handle: VideoResizeHandle; label: string }> = [
+  { handle: 'nw', label: '左上角缩放' }, { handle: 'n', label: '顶部缩放' }, { handle: 'ne', label: '右上角缩放' }, { handle: 'e', label: '右侧缩放' },
+  { handle: 'se', label: '右下角缩放' }, { handle: 's', label: '底部缩放' }, { handle: 'sw', label: '左下角缩放' }, { handle: 'w', label: '左侧缩放' },
+];
 
 function readLayout(): LayoutState {
   try {
@@ -424,7 +429,7 @@ export default function App() {
     setProject((previous) => updateVideoLayout(previous, selected.id, patch));
   }
 
-  function setSelectedVideoLayoutMode(mode: 'full' | 'pip') {
+  function setSelectedVideoLayoutMode(mode: 'full' | 'fit' | 'fill' | 'pip') {
     if (!selected || selected.type !== 'video') return;
     setProject((previous) => setVideoLayoutMode(previous, selected.id, mode));
   }
@@ -475,7 +480,7 @@ export default function App() {
     return { x: (event.clientX - rect.left) / rect.width * project.width, y: (event.clientY - rect.top) / rect.height * project.height };
   }
 
-  function startCanvasVideoDrag(event: React.PointerEvent, mode: 'move' | 'resize') {
+  function startCanvasVideoDrag(event: React.PointerEvent, mode: 'move' | VideoResizeHandle) {
     if (!selected || selected.type !== 'video' || !selectedVideoLayout) return;
     event.stopPropagation();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -559,10 +564,12 @@ export default function App() {
       const point = previewPoint(event);
       const deltaX = point.x - activeDrag.pointerStartX;
       const deltaY = point.y - activeDrag.pointerStartY;
-      const patch = activeDrag.mode === 'move'
-        ? { x: activeDrag.layout.x + deltaX, y: activeDrag.layout.y + deltaY, mode: 'custom' as const }
-        : { width: activeDrag.layout.width + deltaX, height: activeDrag.layout.height + deltaY, mode: 'custom' as const };
-      setProject((previous) => updateVideoLayout(previous, activeDrag.clipId, patch));
+      setProject((previous) => {
+        if (activeDrag.mode === 'move') return updateVideoLayout(previous, activeDrag.clipId, { x: activeDrag.layout.x + deltaX, y: activeDrag.layout.y + deltaY, mode: 'custom' });
+        const clip = previous.clips.find((item) => item.id === activeDrag.clipId);
+        const asset = clip?.assetId ? getAsset(previous, clip.assetId) : undefined;
+        return updateVideoLayout(previous, activeDrag.clipId, resizedVideoLayout(previous, asset, activeDrag.layout, activeDrag.mode, deltaX, deltaY));
+      });
       return;
     }
     const nextTimeMs = pointerTime(event);
@@ -661,7 +668,7 @@ export default function App() {
         </aside>
         <Divider kind="asset" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, assetWidth: DEFAULT_WORKSPACE_LAYOUT.assetWidth }))} />
         <section className="preview-panel panel">
-          <div className="preview-frame"><div ref={previewRef} className="webav-preview" />{selected?.type === 'video' && selectedVideoLayout && <div className="video-layout-overlay" aria-label="拖动或缩放选中视频图层" style={{ left: `${selectedVideoLayout.x / project.width * 100}%`, top: `${selectedVideoLayout.y / project.height * 100}%`, width: `${selectedVideoLayout.width / project.width * 100}%`, height: `${selectedVideoLayout.height / project.height * 100}%` }} onPointerDown={(event) => startCanvasVideoDrag(event, 'move')}><span>{selected.name}</span><i aria-label="缩放选中视频图层" onPointerDown={(event) => startCanvasVideoDrag(event, 'resize')} /></div>}</div>
+          <div className="preview-frame"><div ref={previewRef} className="webav-preview" />{selected?.type === 'video' && selectedVideoLayout && <div className="video-layout-overlay" aria-label="移动或缩放选中视频图层" style={{ left: `${selectedVideoLayout.x / project.width * 100}%`, top: `${selectedVideoLayout.y / project.height * 100}%`, width: `${selectedVideoLayout.width / project.width * 100}%`, height: `${selectedVideoLayout.height / project.height * 100}%` }} onPointerDown={(event) => startCanvasVideoDrag(event, 'move')}><span>{selected.name}</span>{VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={label} className={`video-resize-handle ${handle}`} onPointerDown={(event) => startCanvasVideoDrag(event, handle)} />)}</div>}</div>
           <div className="player-controls"><button aria-label="播放或暂停" disabled={!projectDuration} onClick={togglePlayback}>{editor.playback === 'playing' ? '❚❚ 暂停' : '▶ 播放'}</button><span data-testid="project-duration" data-duration-ms={projectDuration}>{formatTime(editor.playheadMs)} / {formatTime(projectDuration)}</span><input aria-label="播放位置" disabled={!projectDuration} type="range" min="0" max={projectDuration || 1} value={editor.playheadMs} onChange={(event) => void syncAndSeek(Number(event.target.value))} /></div>
         </section>
         <Divider kind="property" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, propertyWidth: DEFAULT_WORKSPACE_LAYOUT.propertyWidth }))} />
@@ -736,12 +743,12 @@ function TimelineClipPreview({ clip, asset, cache, displaySettings }: { clip: Ti
   return null;
 }
 
-function Properties({ clip, asset, project, projectDuration, onUpdate, onTrim, onSetPlaybackRate, onUpdateVideoLayout, onSetVideoLayoutMode, onDelete }: { clip: TimelineClip; asset?: Asset; project: Project; projectDuration: number; onUpdate: (patch: Partial<TimelineClip>) => void; onTrim: (valueMs: number, edge: 'left' | 'right') => void; onSetPlaybackRate: (playbackRate: number) => void; onUpdateVideoLayout: (patch: Partial<VideoLayout>) => void; onSetVideoLayoutMode: (mode: 'full' | 'pip') => void; onDelete: () => void }) {
+function Properties({ clip, asset, project, projectDuration, onUpdate, onTrim, onSetPlaybackRate, onUpdateVideoLayout, onSetVideoLayoutMode, onDelete }: { clip: TimelineClip; asset?: Asset; project: Project; projectDuration: number; onUpdate: (patch: Partial<TimelineClip>) => void; onTrim: (valueMs: number, edge: 'left' | 'right') => void; onSetPlaybackRate: (playbackRate: number) => void; onUpdateVideoLayout: (patch: Partial<VideoLayout>) => void; onSetVideoLayoutMode: (mode: 'full' | 'fit' | 'fill' | 'pip') => void; onDelete: () => void }) {
   const number = (label: string, value: number, update: (next: number) => void, min = 0, max = projectDuration) => <label className="field">{label}<input type="number" min={min} max={max} value={Math.round(value)} onChange={(event) => update(Number(event.target.value))} /></label>;
   const speed = clip.type === 'caption' ? null : <label className="field">播放速度<select aria-label="片段播放速度" value={clip.playbackRate ?? 1} onChange={(event) => onSetPlaybackRate(Number(event.target.value))}>{PLAYBACK_RATE_PRESETS.map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select><small>变速会改变音调。</small></label>;
   if (clip.type === 'caption') return <div className="properties"><label className="field">字幕文字<textarea value={clip.text ?? ''} onChange={(event) => onUpdate({ text: event.target.value, name: event.target.value.slice(0, 18) || '字幕' })} /></label>{number('开始时间（ms）', clip.startMs, (startMs) => onUpdate({ startMs: clamp(startMs, 0, projectDuration - clip.durationMs) }))}{number('结束时间（ms）', clip.startMs + clip.durationMs, (endMs) => onUpdate({ durationMs: clamp(endMs - clip.startMs, 100, projectDuration - clip.startMs) }), 100, projectDuration)}<label className="field">字号<input type="number" min="16" max="100" value={clip.captionStyle?.fontSize ?? 46} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, fontSize: Number(event.target.value) } })} /></label><label className="field">颜色<input type="color" value={clip.captionStyle?.color ?? '#ffffff'} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, color: event.target.value } })} /></label><label className="field">位置<select value={clip.captionStyle?.position ?? 'bottom'} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, position: event.target.value as 'top' | 'center' | 'bottom' } })}><option value="bottom">下方居中</option><option value="center">画面中央</option><option value="top">顶部居中</option></select></label><button className="danger" onClick={onDelete}>删除字幕</button></div>;
   if (clip.type === 'audio') return <div className="properties"><p><b>{clip.name}</b></p>{number('轨道开始（ms）', clip.startMs, (startMs) => onUpdate({ startMs: clamp(startMs, 0, projectDuration - clip.durationMs) }))}{number('源文件起点（ms）', clip.sourceStartMs, (sourceStartMs) => onUpdate({ sourceStartMs: clamp(sourceStartMs, 0, Math.max(0, (asset?.durationMs ?? 0) - getClipSourceDurationMs(clip))) }), 0, asset?.durationMs ?? 0)}{number('时间轴时长（ms）', clip.durationMs, (durationMs) => onTrim(durationMs, 'right'), 100, projectDuration)}{speed}<label className="field">音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><button className="danger" onClick={onDelete}>删除片段</button></div>;
   const layout = clip.videoLayout ?? defaultVideoLayout(project, asset);
   const layoutNumber = (label: string, value: number, patch: (next: number) => Partial<VideoLayout>, max: number) => <label className="field">{label}<input type="number" min="0" max={max} value={Math.round(value)} onChange={(event) => onUpdateVideoLayout(patch(Number(event.target.value)))} /></label>;
-  return <div className="properties"><p><b>{clip.name}</b></p><p>时间轴移动/裁剪会同步原声；预览画布中可拖动边框，右下角可缩放。</p>{speed}<div className="video-layout-actions"><button onClick={() => onSetVideoLayoutMode('full')}>全画面</button><button onClick={() => onSetVideoLayoutMode('pip')}>画中画</button><button onClick={() => onSetVideoLayoutMode('full')}>恢复默认布局</button></div>{layoutNumber('X', layout.x, (x) => ({ x, mode: 'custom' }), project.width)}{layoutNumber('Y', layout.y, (y) => ({ y, mode: 'custom' }), project.height)}{layoutNumber('宽度', layout.width, (width) => ({ width, mode: 'custom' }), project.width)}{layoutNumber('高度', layout.height, (height) => ({ height, mode: 'custom' }), project.height)}<label className="field checkbox-field"><input type="checkbox" checked={layout.keepAspectRatio} onChange={(event) => onUpdateVideoLayout({ keepAspectRatio: event.target.checked })} />保持宽高比</label><label className="field">透明度 {Math.round(layout.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={layout.opacity} onChange={(event) => onUpdateVideoLayout({ opacity: Number(event.target.value), mode: 'custom' })} /></label><label className="field">原声音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" disabled={clip.muted} value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><label className="field checkbox-field"><input type="checkbox" checked={clip.muted ?? false} onChange={(event) => onUpdate({ muted: event.target.checked })} />静音原声</label><button className="danger" onClick={onDelete}>删除视频片段</button></div>;
+  return <div className="properties"><p><b>{clip.name}</b></p><p>时间轴移动/裁剪会同步原声；预览画布可拖动图层，八个控制点可缩放。</p>{speed}<div className="video-layout-actions"><button onClick={() => onSetVideoLayoutMode('full')}>全画面</button><button onClick={() => onSetVideoLayoutMode('fit')}>Fit</button><button onClick={() => onSetVideoLayoutMode('fill')}>Fill</button><button onClick={() => onSetVideoLayoutMode('pip')}>画中画</button><button onClick={() => onSetVideoLayoutMode('fit')}>恢复默认</button></div>{layoutNumber('X', layout.x, (x) => ({ x, mode: 'custom' }), project.width)}{layoutNumber('Y', layout.y, (y) => ({ y, mode: 'custom' }), project.height)}{layoutNumber('宽度', layout.width, (width) => ({ width, mode: 'custom' }), project.width)}{layoutNumber('高度', layout.height, (height) => ({ height, mode: 'custom' }), project.height)}<label className="field checkbox-field"><input type="checkbox" checked={layout.keepAspectRatio} onChange={(event) => onUpdateVideoLayout({ keepAspectRatio: event.target.checked })} />保持宽高比</label><label className="field">透明度 {Math.round(layout.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={layout.opacity} onChange={(event) => onUpdateVideoLayout({ opacity: Number(event.target.value), mode: 'custom' })} /></label><label className="field">原声音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" disabled={clip.muted} value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><label className="field checkbox-field"><input type="checkbox" checked={clip.muted ?? false} onChange={(event) => onUpdate({ muted: event.target.checked })} />静音原声</label><button className="danger" onClick={onDelete}>删除视频片段</button></div>;
 }

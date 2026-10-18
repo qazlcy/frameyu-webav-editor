@@ -34,7 +34,8 @@ export interface CaptionStyle {
   position: CaptionPosition;
 }
 
-export type VideoLayoutMode = 'full' | 'pip' | 'custom';
+export type VideoLayoutMode = 'full' | 'fit' | 'fill' | 'pip' | 'custom';
+export type VideoResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 /** Coordinates use the project's fixed internal 1280×720 canvas, never CSS pixels. */
 export interface VideoLayout {

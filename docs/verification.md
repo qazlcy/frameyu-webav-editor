@@ -16,6 +16,14 @@
 
 本地验收：对同一素材分别截取线性、增强两种模式的截图；记录诊断日志中分位数与实际高度。确认增强模式提升低电平可读性，但静音仍为空白、恒定音量仍平直、Peak 外层与 RMS 内层均反映真实强弱变化。此显示层不应产生新的解码任务，也不得改变试听、预览或导出结果。
 
+## Phase 7.1：统一视频轨道层级
+
+分支：`phase7-video-layers-interaction`，提交：`35b2fbd`。`Track.order` 现在明确表示时间轴 UI 从上到下（越小越靠上）。`getVideoLayerZIndex(project, trackId)` 将其唯一地反向映射到 WebAV zIndex，故 UI 顶部视频轨拥有更高图层并覆盖下方视频轨；字幕继续使用 zIndex `10000`。轨道排序只使已有视频 Sprite 更新 `zIndex`，其媒体签名不变，因此不会重建 MP4Clip；跨视频轨移动也在同一映射下更新。音乐和音效轨排序不参与混音语义。类型检查、64 项 Vitest、生产构建均通过；本地库 Playwright 为 4 passed / 1 skipped。真实三视频覆盖和导出一致性待本地 Chrome/Edge 验收。
+
+## Phase 7.2：视频画布交互与大小编辑
+
+在现有 `videoLayout` 上新增八个画布控制点（四角、四边中点）与可测试的 `resizedVideoLayout()` 锚点计算。图层内部可移动；锁定比例时角点锚定对角、边点调整另一维，解除后宽/高独立变化。右侧属性与画布共用同一 `videoLayout` 命令路径，坐标始终是 1280×720 工程坐标。新增 Fit、Fill、全画面、画中画和恢复默认入口：Fit（默认/恢复）完整等比适配，Fill 用可超出输出画布的等比 Sprite rect 覆盖画布，全画面以 1280×720 rect 直接填满。Fill 属于真实预览/导出布局裁切，不是源素材裁切，Phase 6.3 sourceCrop 并未在本期实现。布局更新不改变时间、源音频、倍速、静音或图层关系；Adapter 对仅布局变化保留现有媒体对象。新增锚点和预设单测后，`npm run typecheck`、Vitest 66/66、生产构建和本地库 Playwright（4 passed / 1 skipped）均通过。真实拖拽、两视频独立调整及 MP4 几何一致性待本地 Chrome/Edge 验收。
+
 ## 阶段 A：环境与 API
 
 | 项目 | 结果 | 记录 |
