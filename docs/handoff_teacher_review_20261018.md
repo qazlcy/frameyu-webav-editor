@@ -86,7 +86,7 @@ npm.cmd run dev -- --host 127.0.0.1
 
 ## 发布状态
 
-GitHub CLI 当前账号 `qazlcy` 对 `rong-24/frameyu-webav-editor` 的 API 权限为 pull=true、push=false。尚需以已有 Git 认证实际推送结果确认发布；不新建凭据、不改安全设置、不强推、不合并 main。
+GitHub CLI 当前账号 `qazlcy` 对 `rong-24/frameyu-webav-editor` 的 API 权限为 pull=true、push=false。已实际执行 `git push --set-upstream origin feat/timeline-media-export-review`，GitHub 明确返回 `Permission to rong-24/frameyu-webav-editor.git denied to qazlcy` 和 HTTP 403。状态：推送被拒绝，远端分支未创建；PR 尚未创建，因为没有可用远端 head 分支。本地代码、四项独立提交、交接和证据完整保留，工作区干净。未新建凭据、改安全设置、强推或合并 main。需要仓库方授予现有账号写权限，或用户自行切换到已有授权账号后再继续推送和创建 PR；本轮按要求在认证不足处停止。
 
 最终成片证据：
 
