@@ -1,15 +1,11 @@
 import type { MP4Clip } from '@webav/av-cliper';
+import type { SourceCrop } from '../editor/types';
 
 /**
  * Stage A only: a fixed, opt-in crop used to validate WebAV's decoded-frame
  * interception path. This is deliberately not persisted in Project.
  */
-export interface NormalizedSourceCrop {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+export type NormalizedSourceCrop = SourceCrop;
 
 export const CENTER_HALF_SOURCE_CROP: Readonly<NormalizedSourceCrop> = Object.freeze({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
 
@@ -33,7 +29,7 @@ interface FrameCanvas { canvas: OffscreenCanvas; context: OffscreenCanvasRenderi
  * AVCanvas preview and the OffscreenSprite used by createCombinator use this
  * same decoded-frame transform.
  */
-export function installFixedSourceCropPrototype(clip: MP4Clip, crop: NormalizedSourceCrop = CENTER_HALF_SOURCE_CROP) {
+export function installSourceCropFrameTransform(clip: MP4Clip, crop: NormalizedSourceCrop) {
   let frameCanvas: FrameCanvas | undefined;
   const fixedCrop = normaliseSourceCrop(crop);
   clip.tickInterceptor = async (_timeUs, tickResult) => {
@@ -43,16 +39,16 @@ export function installFixedSourceCropPrototype(clip: MP4Clip, crop: NormalizedS
     const height = sourceFrame.displayHeight || sourceFrame.codedHeight;
     if (width <= 0 || height <= 0) return tickResult;
     if (typeof OffscreenCanvas === 'undefined' || typeof VideoFrame === 'undefined') throw new Error('当前浏览器无法执行真实源画面裁切：缺少 OffscreenCanvas 或 VideoFrame。');
-    if (!frameCanvas || frameCanvas.width !== width || frameCanvas.height !== height) {
-      const canvas = new OffscreenCanvas(width, height);
+    const { sx, sy, sw, sh } = sourceCropPixels(fixedCrop, width, height);
+    if (!frameCanvas || frameCanvas.width !== sw || frameCanvas.height !== sh) {
+      const canvas = new OffscreenCanvas(sw, sh);
       const context = canvas.getContext('2d', { alpha: true });
       if (!context) throw new Error('无法创建源画面裁切所需的 2D Canvas 上下文。');
-      frameCanvas = { canvas, context, width, height };
+      frameCanvas = { canvas, context, width: sw, height: sh };
     }
-    const { sx, sy, sw, sh } = sourceCropPixels(fixedCrop, width, height);
     try {
-      frameCanvas.context.clearRect(0, 0, width, height);
-      frameCanvas.context.drawImage(sourceFrame, sx, sy, sw, sh, 0, 0, width, height);
+      frameCanvas.context.clearRect(0, 0, sw, sh);
+      frameCanvas.context.drawImage(sourceFrame, sx, sy, sw, sh, 0, 0, sw, sh);
       const init: VideoFrameInit = { timestamp: sourceFrame.timestamp };
       if (sourceFrame.duration !== null) init.duration = sourceFrame.duration;
       const croppedFrame = new VideoFrame(frameCanvas.canvas, init);
@@ -66,4 +62,8 @@ export function installFixedSourceCropPrototype(clip: MP4Clip, crop: NormalizedS
       throw error;
     }
   };
+}
+
+export function installFixedSourceCropPrototype(clip: MP4Clip, crop: NormalizedSourceCrop = CENTER_HALF_SOURCE_CROP) {
+  installSourceCropFrameTransform(clip, crop);
 }

@@ -1,5 +1,6 @@
-import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoLayoutMode, type VideoResizeHandle } from './types';
+import { DEFAULT_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, type Asset, type CaptionDraft, type Project, type SourceCrop, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoLayoutMode, type VideoResizeHandle } from './types';
 import { MIN_DURATION_MS, clamp, getClipPlaybackRate, getClipSourceDurationMs, moveClip, snapMs, sourceOffsetForTimelineOffset, timelineDurationForSourceDuration, trimLeft, trimRight } from './timelineMath';
+import { FULL_SOURCE_CROP, normaliseSourceCrop } from './sourceCrop';
 
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 export const getAsset = (project: Project, assetId: string) => project.assets.find((asset) => asset.id === assetId);
@@ -87,6 +88,7 @@ export function appendVideoClip(project: Project, asset: Asset, trackId = projec
     id: id('video'), trackId: videoTrack.id, type: 'video', assetId: asset.id, name: asset.name,
     startMs: videoTrackEnd(project, videoTrack.id), sourceStartMs: 0, sourceDurationMs: asset.durationMs, durationMs: asset.durationMs, playbackRate: 1, volume: 1,
     videoLayout: defaultVideoLayout(project, asset),
+    sourceCrop: { ...FULL_SOURCE_CROP },
   };
   return withClips(project, [...project.clips, clip]);
 }
@@ -278,6 +280,14 @@ export function updateVideoLayout(project: Project, clipId: string, patch: Parti
     : clamp(Math.round(next.y), 0, project.height - next.height);
   next.opacity = clamp(next.opacity, 0, 1);
   return withClips(project, project.clips.map((item) => item.id === clipId ? { ...item, videoLayout: next } : item));
+}
+
+/** Updates spatial source selection only; timeline interval, rate, audio and layout stay intact. */
+export function updateSourceCrop(project: Project, clipId: string, crop: SourceCrop): Project {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || clip.type !== 'video') return project;
+  const sourceCrop = normaliseSourceCrop(crop);
+  return withClips(project, project.clips.map((item) => item.id === clipId ? { ...item, sourceCrop } : item));
 }
 
 export function setVideoLayoutMode(project: Project, clipId: string, mode: Extract<VideoLayoutMode, 'full' | 'fit' | 'fill' | 'pip'>): Project {

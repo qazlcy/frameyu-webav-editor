@@ -51,6 +51,14 @@ export interface VideoLayout {
   keepAspectRatio: boolean;
 }
 
+/** Normalized source-image rectangle. It is independent from timeline time and videoLayout. */
+export interface SourceCrop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface TimelineClip {
   id: string;
   trackId: string;
@@ -67,6 +75,8 @@ export interface TimelineClip {
   volume: number;
   muted?: boolean;
   videoLayout?: VideoLayout;
+  /** Undefined on legacy projects means the complete source image. */
+  sourceCrop?: SourceCrop;
   text?: string;
   captionStyle?: CaptionStyle;
 }

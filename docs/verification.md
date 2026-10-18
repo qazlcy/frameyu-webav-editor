@@ -15,6 +15,14 @@
 
 限制：远程 Chromium 缺少完整 WebCodecs，无法实际解码或编码视频，故本记录不能宣称真实预览/导出已经通过。必须以 README 第 28 项在本地 Chrome/Edge 检查中央内容、边缘排除、原声与导出一致性；验证通过前不得继续 Phase 6.3 B/C。
 
+## Phase 6.3 B：sourceCrop 工程模型与适配器集成
+
+`TimelineClip.sourceCrop?` 新增为 `{ x, y, w, h }` 的归一化源图矩形；新视频片段显式写入完整矩形，旧工程缺字段时由 `getSourceCrop()` 回退为完整画面。`updateSourceCrop()` 只更新该视频片段，分割通过既有浅复制自然继承相同裁切；时间、源区间、倍率、音量与 `videoLayout` 均不变。
+
+WebAVAdapter 将有效 `sourceCrop` 放入视频媒体签名，因此只会重建受影响视频 Sprite；它在源时间 `MP4Clip.split()` 完成后安装逐帧裁切拦截器。裁切帧以裁切区域自身像素尺寸构造新的 `VideoFrame`，避免先放大到源画幅导致自由比例裁切变形。`sourceCropDisplayLayout()` 在 `keepAspectRatio` 下将裁切后的实际比例 Fit/Fill 到既有 `videoLayout` 目标盒；`keepAspectRatio: false` 则保留用户显式指定的拉伸行为。预览与导出同样通过 Clip clone 复制拦截器。
+
+自动检查：新增 sourceCrop 默认值、边界移动/八方向缩放、非 16:9 裁切无变形布局、分割继承与旧工程兼容单测。真实 WebCodecs 预览/MP4 仍待本地 Chrome/Edge 验收，不能因这些逻辑检查而标记通过。
+
 ## Phase 6.2.2：波形振幅显示优化
 
 分支：`phase6-waveform-amplitude`，基线：`687c6e9`。本阶段只修改缓存 Peak/RMS 的统计、显示映射与 Canvas 绘制；不修改 PCM 解码、任务队列、WebAV 预览、真实音量或 MP4 导出。

@@ -109,7 +109,7 @@ export default function App() {
     width: project.width,
     height: project.height,
     videoTracks: project.tracks.filter((track) => track.type === 'video').map(({ id, order }) => ({ id, order })),
-    clips: project.clips.map(({ id, trackId, type, assetId, name, startMs, sourceStartMs, sourceDurationMs, durationMs, playbackRate, volume, muted, videoLayout, text, captionStyle }) => ({ id, trackId, type, assetId, name, startMs, sourceStartMs, sourceDurationMs, durationMs, playbackRate, volume, muted, videoLayout, text, captionStyle })),
+    clips: project.clips.map(({ id, trackId, type, assetId, name, startMs, sourceStartMs, sourceDurationMs, durationMs, playbackRate, volume, muted, videoLayout, sourceCrop, text, captionStyle }) => ({ id, trackId, type, assetId, name, startMs, sourceStartMs, sourceDurationMs, durationMs, playbackRate, volume, muted, videoLayout, sourceCrop, text, captionStyle })),
   }), [project.width, project.height, project.tracks, project.clips]);
   const mediaProject = useMemo(() => project, [mediaSignature]);
 

@@ -4,6 +4,8 @@ import { defaultVideoLayout, getProjectDuration, getVideoLayerZIndex } from '../
 import { getClipPlaybackRate, getClipSourceDurationMs, msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, CaptionPosition, Project, TimelineClip } from '../editor/types';
 import { CENTER_HALF_SOURCE_CROP, installFixedSourceCropPrototype } from './sourceCropPrototype';
+import { getSourceCrop, isFullSourceCrop, sourceCropDisplayLayout } from '../editor/sourceCrop';
+import { installSourceCropFrameTransform } from './sourceCropPrototype';
 
 export interface RuntimeAsset {
   asset: Asset;
@@ -42,6 +44,7 @@ export class WebAVAdapter {
   private latestSyncRequest = 0;
   private syncQueue: Promise<void> = Promise.resolve();
   private readonly sourceCropPrototype: boolean;
+  private previewSourceCropOverrides = new Map<string, import('../editor/types').SourceCrop>();
 
   constructor(options: WebAVAdapterOptions = {}) {
     this.sourceCropPrototype = options.sourceCropPrototype === true;
@@ -140,6 +143,13 @@ export class WebAVAdapter {
   pause() { this.canvas?.pause(); }
   async previewFrame(timeMs: number) { await this.canvas?.previewFrame(msToUs(Math.max(0, timeMs))); }
 
+  /** Crop edit mode uses this only to show the uncropped source before confirmation. */
+  async setPreviewSourceCropOverride(clipId: string, crop?: import('../editor/types').SourceCrop) {
+    if (crop) this.previewSourceCropOverrides.set(clipId, crop);
+    else this.previewSourceCropOverrides.delete(clipId);
+    if (this.project) await this.sync(this.project, 0);
+  }
+
   async export(project: Project, onProgress?: (progress: number) => void): Promise<Blob> {
     if (!this.canvas) throw new Error('预览画布尚未初始化');
     await this.sync(project, 0);
@@ -174,24 +184,26 @@ export class WebAVAdapter {
   }
 
   private async syncVideoSprite(clip: TimelineClip, project: Project) {
-    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted });
+    const effectiveCrop = this.previewSourceCropOverrides.get(clip.id) ?? getSourceCrop(clip);
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted, sourceCrop: effectiveCrop, sourceCropPrototype: this.sourceCropPrototype });
     const current = this.sprites.get(clip.id);
     if (current?.mediaSignature === mediaSignature) {
-      this.applyVideoSprite(current.sprite, clip, project);
+      this.applyVideoSprite(current.sprite, clip, project, effectiveCrop);
       return;
     }
     this.removeSprite(clip.id);
-    const sprite = await this.createVideoSprite(clip, project);
+    const sprite = await this.createVideoSprite(clip, project, effectiveCrop);
     await this.addSprite(clip.id, sprite, mediaSignature);
   }
 
-  private applyVideoSprite(sprite: VisibleSprite, clip: TimelineClip, project: Project) {
+  private applyVideoSprite(sprite: VisibleSprite, clip: TimelineClip, project: Project, sourceCrop = this.previewSourceCropOverrides.get(clip.id) ?? getSourceCrop(clip)) {
     const asset = clip.assetId ? this.assets.get(clip.assetId)?.asset : undefined;
     const layout = clip.videoLayout ?? defaultVideoLayout(project, asset);
-    sprite.rect.x = layout.x;
-    sprite.rect.y = layout.y;
-    sprite.rect.w = layout.width;
-    sprite.rect.h = layout.height;
+    const displayLayout = sourceCropDisplayLayout(layout, sourceCrop, asset);
+    sprite.rect.x = displayLayout.x;
+    sprite.rect.y = displayLayout.y;
+    sprite.rect.w = displayLayout.width;
+    sprite.rect.h = displayLayout.height;
     sprite.opacity = layout.opacity;
     // Track order is UI top-to-bottom. `getVideoLayerZIndex` inverts that order so
     // the upper timeline video track gets the higher WebAV zIndex. This is called
@@ -200,7 +212,7 @@ export class WebAVAdapter {
     sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs), playbackRate: getClipPlaybackRate(clip) };
   }
 
-  private async createVideoSprite(clip: TimelineClip, project: Project) {
+  private async createVideoSprite(clip: TimelineClip, project: Project, sourceCrop = this.previewSourceCropOverrides.get(clip.id) ?? getSourceCrop(clip)) {
     const runtime = clip.assetId ? this.assets.get(clip.assetId) : undefined;
     if (!runtime) throw new Error(`视频素材“${clip.name}”不存在，请重新导入。`);
     let media = new MP4Clip(runtime.file.stream(), { audio: { volume: clip.muted ? 0 : clip.volume } });
@@ -223,9 +235,12 @@ export class WebAVAdapter {
     if (this.sourceCropPrototype) {
       installFixedSourceCropPrototype(media, CENTER_HALF_SOURCE_CROP);
       console.info('[SourceCropPrototype] installed fixed central 50% source crop', { clipId: clip.id, crop: CENTER_HALF_SOURCE_CROP });
+    } else if (!isFullSourceCrop(sourceCrop)) {
+      installSourceCropFrameTransform(media, sourceCrop);
+      console.info('[SourceCrop] installed clip source crop', { clipId: clip.id, sourceCrop });
     }
     const sprite = new VisibleSprite(media);
-    this.applyVideoSprite(sprite, clip, project);
+    this.applyVideoSprite(sprite, clip, project, sourceCrop);
     sprite.interactable = 'disabled';
     return sprite;
   }
