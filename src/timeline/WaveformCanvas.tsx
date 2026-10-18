@@ -24,14 +24,16 @@ export const WAVEFORM_CANVAS_SELF_TEST_DATA: WaveformData = {
   sampleCounts: Array.from({ length: 256 }, () => 1),
 };
 
-/** A DPR-aware, pointer-transparent, symmetric filled envelope for one visible clip window. */
+/** A DPR-aware, pointer-transparent line envelope; cached PCM is never decoded here. */
 export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, summary, displaySettings = DEFAULT_WAVEFORM_DISPLAY_SETTINGS, compact = false, className = '' }: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const hasReportedPaintRef = useRef(false);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const host = hostRef.current;
+    if (!canvas || !host) return;
     hasReportedPaintRef.current = false;
     let frame = 0;
     let intersecting = typeof IntersectionObserver === 'undefined';
@@ -39,14 +41,19 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
     const draw = () => {
       frame = 0;
       if (!intersecting) return;
-      const bounds = canvas.getBoundingClientRect();
+      const bounds = host.getBoundingClientRect();
       const width = Math.max(0, bounds.width);
       const height = Math.max(0, bounds.height);
       if (width < 1 || height < 1) return;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const viewport = scrollViewport?.getBoundingClientRect();
+      const visibleLeft = Math.max(0, viewport ? viewport.left - bounds.left : 0);
+      const visibleRight = Math.min(width, viewport ? viewport.right - bounds.left : width);
+      const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+      if (visibleWidth < 1) return;
       // Long clips can be tens of thousands of CSS pixels wide. Cap the backing store while
       // retaining device-pixel detail for normal visible clips.
-      const pixelWidth = Math.min(4096, Math.max(1, Math.round(width * dpr)));
+      const pixelWidth = Math.min(4096, Math.max(1, Math.round(visibleWidth * dpr)));
       const pixelHeight = Math.min(1024, Math.max(1, Math.round(height * dpr)));
       if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
         canvas.width = pixelWidth;
@@ -54,18 +61,17 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
       }
       const context = canvas.getContext('2d');
       if (!context) return;
-      const scaleX = pixelWidth / width;
+      canvas.style.position = 'absolute';
+      canvas.style.left = `${visibleLeft}px`;
+      canvas.style.width = `${visibleWidth}px`;
+      canvas.style.height = `${height}px`;
+      const scaleX = pixelWidth / visibleWidth;
       const scaleY = pixelHeight / height;
-      context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
-      context.clearRect(0, 0, width, height);
-      const viewport = scrollViewport?.getBoundingClientRect();
-      const visibleLeft = Math.max(0, viewport ? viewport.left - bounds.left : 0);
-      const visibleRight = Math.min(width, viewport ? viewport.right - bounds.left : width);
-      const visibleWidth = Math.max(0, visibleRight - visibleLeft);
-      if (visibleWidth < 1) return;
+      context.setTransform(scaleX, 0, 0, scaleY, -visibleLeft * scaleX, 0);
+      context.clearRect(visibleLeft, 0, visibleWidth, height);
       const visibleSourceStartMs = sourceStartMs + sourceDurationMs * visibleLeft / width;
       const visibleSourceDurationMs = sourceDurationMs * visibleWidth / width;
-      const columns = Math.min(2400, Math.max(1, Math.round(visibleWidth * dpr)));
+      const columns = Math.min(2400, Math.max(1, Math.round(visibleWidth / (displaySettings.style === 'bars' ? 3 : 1))));
       const envelope = sampleWaveformEnvelope(data, visibleSourceStartMs, visibleSourceDurationMs, columns);
       if (!envelope.length) return;
       const reference = summary ?? summariseWaveform(data);
@@ -100,26 +106,43 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
           else context.lineTo(x, y);
         }
         for (let index = values.length - 1; index >= 0; index -= 1) context.lineTo(xFor(index), centerY + (values[index] ?? 0));
-        context.closePath();
-        context.fillStyle = color;
+        context.strokeStyle = color;
         context.globalAlpha = alpha;
-        context.fill();
+        context.lineWidth = 1;
+        context.stroke();
       };
-      // The outer envelope preserves transients; the inner layer shows sustained energy.
-      paintEnvelope(peakAmplitudes, compact ? .43 : .38);
-      paintEnvelope(rmsAmplitudes, compact ? .82 : .88);
+      context.strokeStyle = color;
+      context.lineWidth = 1;
+      context.globalAlpha = .25;
+      context.beginPath();
+      context.moveTo(visibleLeft, centerY);
+      context.lineTo(visibleRight, centerY);
+      context.stroke();
+      if (settings.style === 'bars') {
+        context.globalAlpha = .7;
+        context.beginPath();
+        peakAmplitudes.forEach((value, index) => {
+          if (value <= 0) return;
+          context.moveTo(xFor(index), centerY - value);
+          context.lineTo(xFor(index), centerY + value);
+        });
+        context.stroke();
+      } else {
+        paintEnvelope(peakAmplitudes, .65);
+        paintEnvelope(rmsAmplitudes, .9);
+      }
       context.globalAlpha = 1;
     };
     const schedule = () => {
       if (intersecting && !frame) frame = requestAnimationFrame(draw);
     };
     const observer = new ResizeObserver(schedule);
-    observer.observe(canvas);
+    observer.observe(host);
     const visibilityObserver = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver((entries) => {
       intersecting = entries.some((entry) => entry.isIntersecting);
       if (intersecting) schedule();
     }, { root: scrollViewport, threshold: 0 });
-    visibilityObserver?.observe(canvas);
+    visibilityObserver?.observe(host);
     scrollViewport?.addEventListener('scroll', schedule, { passive: true });
     schedule();
     return () => {
@@ -130,5 +153,5 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
     };
   }, [color, compact, data, displaySettings, sourceDurationMs, sourceStartMs, summary]);
 
-  return <canvas ref={canvasRef} className={`timeline-waveform-canvas ${className}`} data-waveform-buckets={data.peaks.length} data-waveform-source-start-ms={sourceStartMs} data-waveform-source-duration-ms={sourceDurationMs} aria-hidden="true" />;
+  return <div ref={hostRef} className={`timeline-waveform-canvas ${className}`} data-waveform-buckets={data.peaks.length} data-waveform-source-start-ms={sourceStartMs} data-waveform-source-duration-ms={sourceDurationMs} aria-hidden="true"><canvas ref={canvasRef} /></div>;
 }
