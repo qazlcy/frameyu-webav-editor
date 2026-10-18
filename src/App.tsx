@@ -8,7 +8,7 @@ import { scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timel
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
 import { DEFAULT_WAVEFORM_DISPLAY_SETTINGS, normaliseWaveformDisplaySettings, type WaveformDisplaySettings } from './timeline/waveformDisplay';
-import { hashVideoFile, VideoContentDeduplicator } from './editor/videoDedup';
+import { hashVideoFile, VideoContentDeduplicator, MediaContentDeduplicator } from './editor/videoDedup';
 import { VideoThumbnailStrip } from './timeline/VideoThumbnailStrip';
 import { FULL_SOURCE_CROP, getSourceCrop, moveSourceCrop, resizeSourceCrop } from './editor/sourceCrop';
 
@@ -65,6 +65,7 @@ export default function App() {
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const assetFilesRef = useRef(new Map<string, File>());
   const videoDedupRef = useRef(new VideoContentDeduplicator(hashVideoFile));
+  const audioDedupRef = useRef(new MediaContentDeduplicator(hashVideoFile, 'audio'));
   const timelinePreviewCacheRef = useRef(new TimelineMediaPreviewCache());
   const cacheDisposeTimerRef = useRef<number>();
   const adapterRef = useRef<WebAVAdapter>();
@@ -255,11 +256,10 @@ export default function App() {
       assetFilesRef.current.set(asset.id, file);
       setRuntimeAssetVersion((version) => version + 1);
       timelinePreviewCacheRef.current.noteWaveformAssetImported(asset, fileSelectedAt);
-      setProject((previous) => {
-        const firstVideo = !previous.assets.some((item) => item.type === 'video');
-        const withAsset = addAsset(previous, asset);
-        return firstVideo ? appendVideoClip(withAsset, asset) : withAsset;
-      });
+      const firstVideo = !projectRef.current.assets.some((item) => item.type === 'video');
+      const withAsset = addAsset(projectRef.current, asset);
+      projectRef.current = firstVideo ? appendVideoClip(withAsset, asset) : withAsset;
+      setProject(projectRef.current);
       reservation.commit(asset.id);
       reservation = undefined;
       setEditor((previous) => ({ ...previous, playheadMs: 0, status: 'ready', message: `已导入 ${file.name}` }));
@@ -271,7 +271,8 @@ export default function App() {
   }
 
   function locateDuplicateVideo(assetId: string) {
-    setMaterialFilter('video');
+    const asset = projectRef.current.assets.find((item) => item.id === assetId);
+    setMaterialFilter(asset?.type === 'audio' ? asset.audioKind ?? 'music' : 'video');
     setDuplicateVideoImport(undefined);
     requestAnimationFrame(() => {
       const card = document.getElementById(`asset-card-${assetId}`);
@@ -282,23 +283,37 @@ export default function App() {
 
   async function importAudio(file: File, audioKind: AudioKind) {
     const fileSelectedAt = performance.now();
-    setEditor((previous) => ({ ...previous, status: 'loading', message: '正在解析音频…' }));
+    let reservation: { abort: () => void; commit: (assetId: string) => void } | undefined;
+    setEditor((previous) => ({ ...previous, status: 'loading', message: '正在后台计算音频内容指纹…' }));
     try {
+      const claim = await audioDedupRef.current.claim(file, projectRef.current.assets);
+      if (claim.kind === 'duplicate') {
+        const existing = projectRef.current.assets.find((asset) => asset.id === claim.assetId);
+        if (!existing) throw new Error('重复素材的既有引用已不可用，请重新导入。');
+        setDuplicateVideoImport({ assetId: existing.id, existingName: existing.name, importedName: file.name });
+        setEditor((previous) => ({ ...previous, status: 'ready', message: `“${file.name}”与已有素材内容相同，保留原素材分类。` }));
+        return;
+      }
+      reservation = claim;
       const info = await adapterRef.current!.inspectFile(file, 'audio');
-      const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, ...info };
+      const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, ...info, ...claim.fingerprint };
+      const previewUrl = URL.createObjectURL(file);
       adapterRef.current!.registerAsset(asset, file);
       assetFilesRef.current.set(asset.id, file);
-      setRuntimeAssetVersion((version) => version + 1);
-      audioPreviewUrlsRef.current.set(asset.id, URL.createObjectURL(file));
+      audioPreviewUrlsRef.current.set(asset.id, previewUrl);
       timelinePreviewCacheRef.current.noteAudioImported(asset, fileSelectedAt);
-      setProject((previous) => ({ ...previous, assets: [...previous.assets, asset] }));
+      projectRef.current = addAsset(projectRef.current, asset);
+      setProject(projectRef.current);
+      setRuntimeAssetVersion((version) => version + 1);
+      reservation.commit(asset.id);
+      reservation = undefined;
       setEditor((previous) => ({ ...previous, status: 'ready', message: `已导入${audioKind === 'music' ? '音乐' : '音效'} ${file.name}` }));
     } catch (error) {
+      reservation?.abort();
       console.error('[WebAV] audio import failed', error);
-      setEditor((previous) => ({ ...previous, status: 'error', message: `音频无法解码：${error instanceof Error ? error.message : String(error)}` }));
+      setEditor((previous) => ({ ...previous, status: 'error', message: `音频导入失败：${error instanceof Error ? error.message : String(error)}` }));
     }
   }
-
   function retryWaveform(asset: Asset) {
     const file = assetFilesRef.current.get(asset.id);
     if (!file) {
