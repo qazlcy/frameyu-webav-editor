@@ -86,6 +86,8 @@ export default function App() {
   const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
   const [duplicateVideoImport, setDuplicateVideoImport] = useState<DuplicateVideoImport>();
+  // URL-only Stage A validation switch; this is not persisted editor state.
+  const sourceCropPrototypeEnabled = useMemo(() => new URLSearchParams(window.location.search).get('sourceCropPrototype') === '1', []);
 
   projectRef.current = project;
   const projectDuration = getProjectDuration(project);
@@ -116,7 +118,7 @@ export default function App() {
       window.clearTimeout(cacheDisposeTimerRef.current);
       cacheDisposeTimerRef.current = undefined;
     }
-    const adapter = new WebAVAdapter();
+    const adapter = new WebAVAdapter({ sourceCropPrototype: sourceCropPrototypeEnabled });
     adapterRef.current = adapter;
     if (previewRef.current) {
       adapter.attach(previewRef.current, {
@@ -145,7 +147,7 @@ export default function App() {
         cacheDisposeTimerRef.current = undefined;
       }, 0);
     };
-  }, []);
+  }, [sourceCropPrototypeEnabled]);
 
   useEffect(() => timelinePreviewCacheRef.current.subscribe((asset) => {
     const updateRequestedAt = performance.now();
@@ -697,7 +699,7 @@ export default function App() {
         </aside>
         <Divider kind="asset" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, assetWidth: DEFAULT_WORKSPACE_LAYOUT.assetWidth }))} />
         <section className="preview-panel panel">
-          <div className="preview-frame"><div ref={previewRef} className="webav-preview" />{selected?.type === 'video' && selectedVideoLayout && <div className="video-layout-overlay" aria-label="移动或缩放选中视频图层" style={{ left: `${selectedVideoLayout.x / project.width * 100}%`, top: `${selectedVideoLayout.y / project.height * 100}%`, width: `${selectedVideoLayout.width / project.width * 100}%`, height: `${selectedVideoLayout.height / project.height * 100}%` }} onPointerDown={(event) => startCanvasVideoDrag(event, 'move')}><span>{selected.name}</span>{VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={label} className={`video-resize-handle ${handle}`} onPointerDown={(event) => startCanvasVideoDrag(event, handle)} />)}</div>}</div>
+          <div className="preview-frame">{sourceCropPrototypeEnabled && <div className="source-crop-prototype-notice">裁切原型：所有视频仅保留源画面中央 50%</div>}<div ref={previewRef} className="webav-preview" />{selected?.type === 'video' && selectedVideoLayout && <div className="video-layout-overlay" aria-label="移动或缩放选中视频图层" style={{ left: `${selectedVideoLayout.x / project.width * 100}%`, top: `${selectedVideoLayout.y / project.height * 100}%`, width: `${selectedVideoLayout.width / project.width * 100}%`, height: `${selectedVideoLayout.height / project.height * 100}%` }} onPointerDown={(event) => startCanvasVideoDrag(event, 'move')}><span>{selected.name}</span>{VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={label} className={`video-resize-handle ${handle}`} onPointerDown={(event) => startCanvasVideoDrag(event, handle)} />)}</div>}</div>
           <div className="player-controls"><button aria-label="播放或暂停" disabled={!projectDuration} onClick={togglePlayback}>{editor.playback === 'playing' ? '❚❚ 暂停' : '▶ 播放'}</button><span data-testid="project-duration" data-duration-ms={projectDuration}>{formatTime(editor.playheadMs)} / {formatTime(projectDuration)}</span><input aria-label="播放位置" disabled={!projectDuration} type="range" min="0" max={projectDuration || 1} value={editor.playheadMs} onChange={(event) => void syncAndSeek(Number(event.target.value))} /></div>
         </section>
         <Divider kind="property" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, propertyWidth: DEFAULT_WORKSPACE_LAYOUT.propertyWidth }))} />

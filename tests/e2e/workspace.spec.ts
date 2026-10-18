@@ -124,3 +124,10 @@ test('draws the decoder-independent Canvas waveform self-test with visible pixel
     return false;
   })).toBe(true);
 });
+
+test('keeps the real source-crop prototype explicitly URL-gated', async ({ page }) => {
+  await page.goto('/?sourceCropPrototype=1', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('裁切原型：所有视频仅保留源画面中央 50%')).toBeVisible();
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('裁切原型：所有视频仅保留源画面中央 50%')).toHaveCount(0);
+});

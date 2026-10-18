@@ -3,6 +3,7 @@ import { AudioClip, Combinator, ImgClip, MP4Clip, renderTxt2ImgBitmap, VisibleSp
 import { defaultVideoLayout, getProjectDuration, getVideoLayerZIndex } from '../editor/commands';
 import { getClipPlaybackRate, getClipSourceDurationMs, msToUs, usToMs } from '../editor/timelineMath';
 import type { Asset, CaptionPosition, Project, TimelineClip } from '../editor/types';
+import { CENTER_HALF_SOURCE_CROP, installFixedSourceCropPrototype } from './sourceCropPrototype';
 
 export interface RuntimeAsset {
   asset: Asset;
@@ -17,6 +18,11 @@ export interface CapabilityReport {
 export interface PreviewCallbacks {
   onTimeChange: (timeMs: number) => void;
   onPlaybackChange?: (playing: boolean) => void;
+}
+
+export interface WebAVAdapterOptions {
+  /** Stage A only: URL-gated real-frame crop validation, not editor state. */
+  sourceCropPrototype?: boolean;
 }
 
 interface RuntimeSprite {
@@ -35,6 +41,11 @@ export class WebAVAdapter {
   private unsubs: Array<() => void> = [];
   private latestSyncRequest = 0;
   private syncQueue: Promise<void> = Promise.resolve();
+  private readonly sourceCropPrototype: boolean;
+
+  constructor(options: WebAVAdapterOptions = {}) {
+    this.sourceCropPrototype = options.sourceCropPrototype === true;
+  }
 
   static async checkCapabilities(): Promise<CapabilityReport> {
     const reasons: string[] = [];
@@ -208,6 +219,10 @@ export class WebAVAdapter {
       source.destroy();
       discarded.destroy();
       media = selected;
+    }
+    if (this.sourceCropPrototype) {
+      installFixedSourceCropPrototype(media, CENTER_HALF_SOURCE_CROP);
+      console.info('[SourceCropPrototype] installed fixed central 50% source crop', { clipId: clip.id, crop: CENTER_HALF_SOURCE_CROP });
     }
     const sprite = new VisibleSprite(media);
     this.applyVideoSprite(sprite, clip, project);

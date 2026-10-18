@@ -2,6 +2,19 @@
 
 日期：2026-10-13。所有时间均以浏览器客户端的本地 WebCodecs 能力为准。
 
+## Phase 6.3 A：真实源画面裁切原型
+
+分支：`phase6-source-crop`，基线：`200a9ab`。本提交刻意**未**添加 `TimelineClip.sourceCrop`、裁切 UI 或 CSS 伪裁切；它只建立一个以 `?sourceCropPrototype=1` 显式启用的固定验证路径，处理的裁切矩形为 `{ x: 0.25, y: 0.25, w: 0.5, h: 0.5 }`。
+
+| 项目 | 结果 | 记录 |
+| --- | --- | --- |
+| WebAV 帧路径核查 | 已验证（安装源码） | `MP4Clip.tick()` 同时返回 `VideoFrame` 与音频 PCM；`VisibleSprite`/`OffscreenSprite` 都调用 Clip 的 `tick()`。`AVCanvas.createCombinator()` 将当前 Sprite 转成 `OffscreenSprite`，其 `clone()` 最终调用 `MP4Clip.clone()`。WebAV 1.2.8 的 `MP4Clip.clone()` 显式复制 `tickInterceptor`，因此预览与 Combinator 会使用同一帧处理规则。 |
+| 实际变换 | 已实现 / 待本地媒体验证 | 适配器在切分源时间区间后为每个视频 MP4Clip 安装 `tickInterceptor`；它复用同尺寸 `OffscreenCanvas`，以 `drawImage` 从原始帧复制中央区域至完整输出尺寸，并使用原 `timestamp` / `duration` 创建替换 `VideoFrame`。原帧在同步 `drawImage` 后由拦截器关闭；替换帧仍由 Sprite 生命周期释放。 |
+| 音频、时长与层级 | 已实现（代码） | 拦截器仅替换 `video` 字段，保留原 `audio` PCM、时间戳、Sprite `time.playbackRate`、布局、透明度和 zIndex；因此不改变原声混音、倍速或视频层级。 |
+| 自动检查 | 通过 | `sourceCropPrototype` 单测验证归一化边界及 1280×720 中央 50% 对应的 `(320,180,640,360)` 源像素矩形；`npm run typecheck`、Vitest 72/72、`npm run build` 均通过。工作台 Playwright 为 5 passed / 1 skipped，其中新增 URL 开关可见性与默认关闭检查。 |
+
+限制：远程 Chromium 缺少完整 WebCodecs，无法实际解码或编码视频，故本记录不能宣称真实预览/导出已经通过。必须以 README 第 28 项在本地 Chrome/Edge 检查中央内容、边缘排除、原声与导出一致性；验证通过前不得继续 Phase 6.3 B/C。
+
 ## Phase 6.2.2：波形振幅显示优化
 
 分支：`phase6-waveform-amplitude`，基线：`687c6e9`。本阶段只修改缓存 Peak/RMS 的统计、显示映射与 Canvas 绘制；不修改 PCM 解码、任务队列、WebAV 预览、真实音量或 MP4 导出。
