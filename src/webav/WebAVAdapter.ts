@@ -144,10 +144,10 @@ export class WebAVAdapter {
   async previewFrame(timeMs: number) { await this.canvas?.previewFrame(msToUs(Math.max(0, timeMs))); }
 
   /** Crop edit mode uses this only to show the uncropped source before confirmation. */
-  async setPreviewSourceCropOverride(clipId: string, crop?: import('../editor/types').SourceCrop) {
+  async setPreviewSourceCropOverride(clipId: string, crop?: import('../editor/types').SourceCrop, previewMs = 0) {
     if (crop) this.previewSourceCropOverrides.set(clipId, crop);
     else this.previewSourceCropOverrides.delete(clipId);
-    if (this.project) await this.sync(this.project, 0);
+    if (this.project) await this.sync(this.project, previewMs);
   }
 
   async export(project: Project, onProgress?: (progress: number) => void): Promise<Blob> {

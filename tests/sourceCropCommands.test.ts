@@ -25,6 +25,15 @@ describe('sourceCrop project commands', () => {
     expect(resized).toEqual({ x: 0, y: 0, w: 0.7, h: 0.7 });
   });
 
+  it('locks a crop handle to the requested source-space aspect ratio', () => {
+    const resized = resizeSourceCrop({ x: 0.2, y: 0.2, w: 0.5, h: 0.5 }, 'e', 0.2, 0, 2);
+    expect(resized.w / resized.h).toBeCloseTo(2, 6);
+    expect(resized.x).toBeCloseTo(0.2, 6);
+    expect(resized.w).toBeCloseTo(0.7, 6);
+    expect(resized.y).toBeCloseTo(0.275, 6);
+    expect(resized.h).toBeCloseTo(0.35, 6);
+  });
+
   it('fits a non-16:9 crop inside an aspect-locked layout instead of stretching it', () => {
     const layout: VideoLayout = { mode: 'fit', x: 0, y: 0, width: 1280, height: 720, opacity: 1, keepAspectRatio: true };
     const result = sourceCropDisplayLayout(layout, { x: 0.25, y: 0, w: 0.5, h: 1 }, asset);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, canSetClipPlaybackRate, canSplitTimelineClip, defaultVideoLayout, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, PLAYBACK_RATE_PRESETS, removeClip, renameTrack, reorderTrack, resizedVideoLayout, resizeTrack, setClipPlaybackRate, setVideoLayoutMode, splitTimelineClip, trimProjectClip, updateClip, updateVideoLayout } from './editor/commands';
-import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type EditorState, type Project, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoResizeHandle } from './editor/types';
+import { addAsset, addAudioClip, addCaption, addTrack, appendVideoClip, canSetClipPlaybackRate, canSplitTimelineClip, defaultVideoLayout, deleteEmptyTrack, getAsset, getProjectDuration, getTrack, moveClipToCompatibleTrack, moveProjectClip, PLAYBACK_RATE_PRESETS, removeClip, renameTrack, reorderTrack, resizedVideoLayout, resizeTrack, setClipPlaybackRate, setVideoLayoutMode, splitTimelineClip, trimProjectClip, updateClip, updateSourceCrop, updateVideoLayout } from './editor/commands';
+import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type EditorState, type Project, type SourceCrop, type TimelineClip, type Track, type TrackType, type VideoLayout, type VideoResizeHandle } from './editor/types';
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, getClipSourceDurationMs, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
@@ -9,6 +9,7 @@ import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
 import { DEFAULT_WAVEFORM_DISPLAY_SETTINGS, normaliseWaveformDisplaySettings, type WaveformDisplaySettings } from './timeline/waveformDisplay';
 import { hashVideoFile, VideoContentDeduplicator } from './editor/videoDedup';
+import { FULL_SOURCE_CROP, getSourceCrop, moveSourceCrop, resizeSourceCrop } from './editor/sourceCrop';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
@@ -21,13 +22,16 @@ type MaterialFilter = 'all' | 'video' | 'music' | 'sfx' | 'caption';
 type LayoutDrag = { kind: 'asset' | 'property' | 'timeline'; pointerId: number; startClient: number; startValue: number };
 type ClipContextMenu = { clipId: string; x: number; y: number };
 type DuplicateVideoImport = { assetId: string; existingName: string; importedName: string };
+type CropAspectPreset = 'free' | '16:9' | '9:16' | '1:1' | '4:3';
+type CropSession = { clipId: string; initial: SourceCrop; draft: SourceCrop; aspectPreset: CropAspectPreset };
 
 type DragState =
   | { kind: 'clip'; pointerId: number; clip: TimelineClip; mode: 'move' | 'left' | 'right'; pointerStartMs: number }
   | { kind: 'playhead'; pointerId: number }
   | { kind: 'track'; pointerId: number; trackId: string }
   | { kind: 'track-height'; pointerId: number; trackId: string; startHeight: number; startClientY: number }
-  | { kind: 'canvas-video'; pointerId: number; clipId: string; mode: 'move' | VideoResizeHandle; pointerStartX: number; pointerStartY: number; layout: VideoLayout };
+  | { kind: 'canvas-video'; pointerId: number; clipId: string; mode: 'move' | VideoResizeHandle; pointerStartX: number; pointerStartY: number; layout: VideoLayout }
+  | { kind: 'canvas-crop'; pointerId: number; clipId: string; mode: 'move' | VideoResizeHandle; pointerStartX: number; pointerStartY: number; crop: SourceCrop; layout: VideoLayout };
 
 const VIDEO_RESIZE_HANDLES: ReadonlyArray<{ handle: VideoResizeHandle; label: string }> = [
   { handle: 'nw', label: '左上角缩放' }, { handle: 'n', label: '顶部缩放' }, { handle: 'ne', label: '右上角缩放' }, { handle: 'e', label: '右侧缩放' },
@@ -67,6 +71,7 @@ export default function App() {
   const projectRef = useRef<Project>(emptyProject());
   const layoutDragRef = useRef<LayoutDrag>();
   const dragRef = useRef<DragState>();
+  const cropSessionRef = useRef<CropSession>();
   const [project, setProject] = useState<Project>(emptyProject);
   const [editor, setEditor] = useState<EditorState>(initialEditor);
   const [capability, setCapability] = useState<CapabilityReport>();
@@ -86,6 +91,7 @@ export default function App() {
   const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
   const [duplicateVideoImport, setDuplicateVideoImport] = useState<DuplicateVideoImport>();
+  const [cropSession, setCropSession] = useState<CropSession>();
   // URL-only Stage A validation switch; this is not persisted editor state.
   const sourceCropPrototypeEnabled = useMemo(() => new URLSearchParams(window.location.search).get('sourceCropPrototype') === '1', []);
 
@@ -95,6 +101,7 @@ export default function App() {
   const selected = project.clips.find((clip) => clip.id === editor.selectedClipId);
   const selectedAsset = selected?.assetId ? getAsset(project, selected.assetId) : undefined;
   const selectedVideoLayout = selected?.type === 'video' ? selected.videoLayout ?? defaultVideoLayout(project, selectedAsset) : undefined;
+  const cropEditorLayout = cropSession?.clipId === selected?.id ? selectedVideoLayout : undefined;
   const timelineDuration = Math.max(projectDuration, 10000);
   const tracks = useMemo(() => sortedTracks(project.tracks), [project.tracks]);
   const assetsById = useMemo(() => new Map(project.assets.map((asset) => [asset.id, asset])), [project.assets]);
@@ -511,6 +518,79 @@ export default function App() {
     return { x: (event.clientX - rect.left) / rect.width * project.width, y: (event.clientY - rect.top) / rect.height * project.height };
   }
 
+  function cropPoint(event: Pick<React.PointerEvent, 'clientX' | 'clientY'>, layout: VideoLayout) {
+    const point = previewPoint(event);
+    return { x: clamp((point.x - layout.x) / layout.width, 0, 1), y: clamp((point.y - layout.y) / layout.height, 0, 1) };
+  }
+
+  function cropLockRatio(session: CropSession) {
+    const desired = session.aspectPreset === 'free' ? undefined : ({ '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1, '4:3': 4 / 3 } as const)[session.aspectPreset];
+    if (!desired) return undefined;
+    const clip = projectRef.current.clips.find((item) => item.id === session.clipId);
+    const asset = clip?.assetId ? getAsset(projectRef.current, clip.assetId) : undefined;
+    const sourceAspect = asset?.width && asset.height ? asset.width / asset.height : 16 / 9;
+    return desired / sourceAspect;
+  }
+
+  function setCropDraft(draft: SourceCrop) {
+    const session = cropSessionRef.current;
+    if (!session) return;
+    const next = { ...session, draft };
+    cropSessionRef.current = next;
+    setCropSession(next);
+  }
+
+  function startCropMode() {
+    if (!selected || selected.type !== 'video') return;
+    const current = getSourceCrop(selected);
+    const next: CropSession = { clipId: selected.id, initial: current, draft: current, aspectPreset: 'free' };
+    cropSessionRef.current = next;
+    setCropSession(next);
+    adapterRef.current?.pause();
+    // Editing always starts from the complete original source, so reopening a
+    // crop edits its persisted rectangle rather than destructively recropping it.
+    void adapterRef.current?.setPreviewSourceCropOverride(selected.id, { ...FULL_SOURCE_CROP }, editor.playheadMs).catch((error: unknown) => console.error('[SourceCrop] failed to open editor', error));
+  }
+
+  function cancelCropMode() {
+    const session = cropSessionRef.current;
+    if (session) void adapterRef.current?.setPreviewSourceCropOverride(session.clipId, undefined, editor.playheadMs).catch((error: unknown) => console.error('[SourceCrop] failed to restore crop', error));
+    cropSessionRef.current = undefined;
+    setCropSession(undefined);
+  }
+
+  function confirmCropMode() {
+    const session = cropSessionRef.current;
+    if (!session) return;
+    void adapterRef.current?.setPreviewSourceCropOverride(session.clipId, undefined, editor.playheadMs).catch((error: unknown) => console.error('[SourceCrop] failed to apply crop', error));
+    setProject((previous) => updateSourceCrop(previous, session.clipId, session.draft));
+    cropSessionRef.current = undefined;
+    setCropSession(undefined);
+  }
+
+  function resetCropDraft() {
+    setCropDraft({ ...FULL_SOURCE_CROP });
+  }
+
+  function setCropPreset(aspectPreset: CropAspectPreset) {
+    const session = cropSessionRef.current;
+    if (!session) return;
+    const next = { ...session, aspectPreset };
+    cropSessionRef.current = next;
+    setCropSession(next);
+  }
+
+  function startCanvasCropDrag(event: React.PointerEvent, mode: 'move' | VideoResizeHandle) {
+    const session = cropSessionRef.current;
+    if (!session || !selectedVideoLayout || session.clipId !== selected?.id) return;
+    event.stopPropagation();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    const point = cropPoint(event, selectedVideoLayout);
+    const nextDrag: DragState = { kind: 'canvas-crop', pointerId: event.pointerId, clipId: session.clipId, mode, pointerStartX: point.x, pointerStartY: point.y, crop: session.draft, layout: selectedVideoLayout };
+    dragRef.current = nextDrag;
+    setDrag(nextDrag);
+  }
+
   function startCanvasVideoDrag(event: React.PointerEvent, mode: 'move' | VideoResizeHandle) {
     if (!selected || selected.type !== 'video' || !selectedVideoLayout) return;
     event.stopPropagation();
@@ -601,6 +681,17 @@ export default function App() {
         const asset = clip?.assetId ? getAsset(previous, clip.assetId) : undefined;
         return updateVideoLayout(previous, activeDrag.clipId, resizedVideoLayout(previous, asset, activeDrag.layout, activeDrag.mode, deltaX, deltaY));
       });
+      return;
+    }
+    if (activeDrag.kind === 'canvas-crop') {
+      const point = cropPoint(event, activeDrag.layout);
+      const deltaX = point.x - activeDrag.pointerStartX;
+      const deltaY = point.y - activeDrag.pointerStartY;
+      const session = cropSessionRef.current;
+      if (!session || session.clipId !== activeDrag.clipId) return;
+      setCropDraft(activeDrag.mode === 'move'
+        ? moveSourceCrop(activeDrag.crop, deltaX, deltaY)
+        : resizeSourceCrop(activeDrag.crop, activeDrag.mode, deltaX, deltaY, cropLockRatio(session)));
       return;
     }
     const nextTimeMs = pointerTime(event);
@@ -699,11 +790,11 @@ export default function App() {
         </aside>
         <Divider kind="asset" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, assetWidth: DEFAULT_WORKSPACE_LAYOUT.assetWidth }))} />
         <section className="preview-panel panel">
-          <div className="preview-frame">{sourceCropPrototypeEnabled && <div className="source-crop-prototype-notice">裁切原型：所有视频仅保留源画面中央 50%</div>}<div ref={previewRef} className="webav-preview" />{selected?.type === 'video' && selectedVideoLayout && <div className="video-layout-overlay" aria-label="移动或缩放选中视频图层" style={{ left: `${selectedVideoLayout.x / project.width * 100}%`, top: `${selectedVideoLayout.y / project.height * 100}%`, width: `${selectedVideoLayout.width / project.width * 100}%`, height: `${selectedVideoLayout.height / project.height * 100}%` }} onPointerDown={(event) => startCanvasVideoDrag(event, 'move')}><span>{selected.name}</span>{VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={label} className={`video-resize-handle ${handle}`} onPointerDown={(event) => startCanvasVideoDrag(event, handle)} />)}</div>}</div>
+          <div className="preview-frame">{sourceCropPrototypeEnabled && <div className="source-crop-prototype-notice">裁切原型：所有视频仅保留源画面中央 50%</div>}<div ref={previewRef} className="webav-preview" />{cropSession && cropEditorLayout ? <SourceCropEditor layout={cropEditorLayout} crop={cropSession.draft} aspectPreset={cropSession.aspectPreset} onPointerDown={startCanvasCropDrag} onChangePreset={setCropPreset} onConfirm={confirmCropMode} onCancel={cancelCropMode} onReset={resetCropDraft} /> : selected?.type === 'video' && selectedVideoLayout && <div className="video-layout-overlay" aria-label="移动或缩放选中视频图层" style={{ left: `${selectedVideoLayout.x / project.width * 100}%`, top: `${selectedVideoLayout.y / project.height * 100}%`, width: `${selectedVideoLayout.width / project.width * 100}%`, height: `${selectedVideoLayout.height / project.height * 100}%` }} onPointerDown={(event) => startCanvasVideoDrag(event, 'move')}><span>{selected.name}</span>{VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={label} className={`video-resize-handle ${handle}`} onPointerDown={(event) => startCanvasVideoDrag(event, handle)} />)}</div>}</div>
           <div className="player-controls"><button aria-label="播放或暂停" disabled={!projectDuration} onClick={togglePlayback}>{editor.playback === 'playing' ? '❚❚ 暂停' : '▶ 播放'}</button><span data-testid="project-duration" data-duration-ms={projectDuration}>{formatTime(editor.playheadMs)} / {formatTime(projectDuration)}</span><input aria-label="播放位置" disabled={!projectDuration} type="range" min="0" max={projectDuration || 1} value={editor.playheadMs} onChange={(event) => void syncAndSeek(Number(event.target.value))} /></div>
         </section>
         <Divider kind="property" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, propertyWidth: DEFAULT_WORKSPACE_LAYOUT.propertyWidth }))} />
-        <aside className="property-panel panel"><h2>属性</h2>{selected ? <Properties clip={selected} asset={selectedAsset} project={project} projectDuration={projectDuration} onUpdate={updateSelected} onTrim={trimSelected} onSetPlaybackRate={setSelectedPlaybackRate} onUpdateVideoLayout={updateSelectedVideoLayout} onSetVideoLayoutMode={setSelectedVideoLayoutMode} onDelete={() => { setProject((previous) => removeClip(previous, selected.id)); setEditor((previous) => ({ ...previous, selectedClipId: undefined })); }} /> : <p className="empty">选择时间轴片段以编辑属性</p>}</aside>
+        <aside className="property-panel panel"><h2>属性</h2>{selected ? <Properties clip={selected} asset={selectedAsset} project={project} projectDuration={projectDuration} onUpdate={updateSelected} onTrim={trimSelected} onSetPlaybackRate={setSelectedPlaybackRate} onUpdateVideoLayout={updateSelectedVideoLayout} onSetVideoLayoutMode={setSelectedVideoLayoutMode} onStartCrop={startCropMode} cropEditing={cropSession?.clipId === selected.id} onDelete={() => { setProject((previous) => removeClip(previous, selected.id)); setEditor((previous) => ({ ...previous, selectedClipId: undefined })); }} /> : <p className="empty">选择时间轴片段以编辑属性</p>}</aside>
       </section>
       <Divider kind="timeline" onPointerDown={startLayoutDrag} onDoubleClick={() => setLayout((previous) => ({ ...previous, timelineHeight: DEFAULT_WORKSPACE_LAYOUT.timelineHeight }))} />
       <section className="timeline-panel panel" style={{ height: `${layout.timelineHeight}px` }}>
@@ -785,12 +876,31 @@ function TimelineClipPreview({ clip, asset, cache, displaySettings }: { clip: Ti
   return null;
 }
 
-function Properties({ clip, asset, project, projectDuration, onUpdate, onTrim, onSetPlaybackRate, onUpdateVideoLayout, onSetVideoLayoutMode, onDelete }: { clip: TimelineClip; asset?: Asset; project: Project; projectDuration: number; onUpdate: (patch: Partial<TimelineClip>) => void; onTrim: (valueMs: number, edge: 'left' | 'right') => void; onSetPlaybackRate: (playbackRate: number) => void; onUpdateVideoLayout: (patch: Partial<VideoLayout>) => void; onSetVideoLayoutMode: (mode: 'full' | 'fit' | 'fill' | 'pip') => void; onDelete: () => void }) {
+function SourceCropEditor({ layout, crop, aspectPreset, onPointerDown, onChangePreset, onConfirm, onCancel, onReset }: { layout: VideoLayout; crop: SourceCrop; aspectPreset: CropAspectPreset; onPointerDown: (event: React.PointerEvent, mode: 'move' | VideoResizeHandle) => void; onChangePreset: (preset: CropAspectPreset) => void; onConfirm: () => void; onCancel: () => void; onReset: () => void }) {
+  const cropStyle: CSSProperties = { left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.w * 100}%`, height: `${crop.h * 100}%` };
+  const outerStyle: CSSProperties = { left: `${layout.x / 1280 * 100}%`, top: `${layout.y / 720 * 100}%`, width: `${layout.width / 1280 * 100}%`, height: `${layout.height / 720 * 100}%` };
+  return <div className="source-crop-editor" aria-label="视频源画面裁切编辑器" style={outerStyle}>
+    <div className="source-crop-mask top" style={{ height: `${crop.y * 100}%` }} />
+    <div className="source-crop-mask left" style={{ top: `${crop.y * 100}%`, height: `${crop.h * 100}%`, width: `${crop.x * 100}%` }} />
+    <div className="source-crop-mask right" style={{ top: `${crop.y * 100}%`, height: `${crop.h * 100}%`, left: `${(crop.x + crop.w) * 100}%` }} />
+    <div className="source-crop-mask bottom" style={{ top: `${(crop.y + crop.h) * 100}%` }} />
+    <div className="source-crop-box" style={cropStyle} onPointerDown={(event) => onPointerDown(event, 'move')}>
+      <span className="source-crop-label">裁切区域</span>
+      {VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={`裁切${label}`} className={`source-crop-handle ${handle}`} onPointerDown={(event) => onPointerDown(event, handle)} />)}
+    </div>
+    <div className="source-crop-toolbar" onPointerDown={(event) => event.stopPropagation()}>
+      <label>比例 <select aria-label="裁切比例" value={aspectPreset} onChange={(event) => onChangePreset(event.target.value as CropAspectPreset)}><option value="free">自由</option><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:3">4:3</option></select></label>
+      <button type="button" onClick={onReset}>重置裁切</button><button type="button" onClick={onCancel}>取消</button><button type="button" className="primary" onClick={onConfirm}>确认</button>
+    </div>
+  </div>;
+}
+
+function Properties({ clip, asset, project, projectDuration, onUpdate, onTrim, onSetPlaybackRate, onUpdateVideoLayout, onSetVideoLayoutMode, onStartCrop, cropEditing, onDelete }: { clip: TimelineClip; asset?: Asset; project: Project; projectDuration: number; onUpdate: (patch: Partial<TimelineClip>) => void; onTrim: (valueMs: number, edge: 'left' | 'right') => void; onSetPlaybackRate: (playbackRate: number) => void; onUpdateVideoLayout: (patch: Partial<VideoLayout>) => void; onSetVideoLayoutMode: (mode: 'full' | 'fit' | 'fill' | 'pip') => void; onStartCrop: () => void; cropEditing: boolean; onDelete: () => void }) {
   const number = (label: string, value: number, update: (next: number) => void, min = 0, max = projectDuration) => <label className="field">{label}<input type="number" min={min} max={max} value={Math.round(value)} onChange={(event) => update(Number(event.target.value))} /></label>;
   const speed = clip.type === 'caption' ? null : <label className="field">播放速度<select aria-label="片段播放速度" value={clip.playbackRate ?? 1} onChange={(event) => onSetPlaybackRate(Number(event.target.value))}>{PLAYBACK_RATE_PRESETS.map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select><small>变速会改变音调。</small></label>;
   if (clip.type === 'caption') return <div className="properties"><label className="field">字幕文字<textarea value={clip.text ?? ''} onChange={(event) => onUpdate({ text: event.target.value, name: event.target.value.slice(0, 18) || '字幕' })} /></label>{number('开始时间（ms）', clip.startMs, (startMs) => onUpdate({ startMs: clamp(startMs, 0, projectDuration - clip.durationMs) }))}{number('结束时间（ms）', clip.startMs + clip.durationMs, (endMs) => onUpdate({ durationMs: clamp(endMs - clip.startMs, 100, projectDuration - clip.startMs) }), 100, projectDuration)}<label className="field">字号<input type="number" min="16" max="100" value={clip.captionStyle?.fontSize ?? 46} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, fontSize: Number(event.target.value) } })} /></label><label className="field">颜色<input type="color" value={clip.captionStyle?.color ?? '#ffffff'} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, color: event.target.value } })} /></label><label className="field">位置<select value={clip.captionStyle?.position ?? 'bottom'} onChange={(event) => onUpdate({ captionStyle: { ...clip.captionStyle!, position: event.target.value as 'top' | 'center' | 'bottom' } })}><option value="bottom">下方居中</option><option value="center">画面中央</option><option value="top">顶部居中</option></select></label><button className="danger" onClick={onDelete}>删除字幕</button></div>;
   if (clip.type === 'audio') return <div className="properties"><p><b>{clip.name}</b></p>{number('轨道开始（ms）', clip.startMs, (startMs) => onUpdate({ startMs: clamp(startMs, 0, projectDuration - clip.durationMs) }))}{number('源文件起点（ms）', clip.sourceStartMs, (sourceStartMs) => onUpdate({ sourceStartMs: clamp(sourceStartMs, 0, Math.max(0, (asset?.durationMs ?? 0) - getClipSourceDurationMs(clip))) }), 0, asset?.durationMs ?? 0)}{number('时间轴时长（ms）', clip.durationMs, (durationMs) => onTrim(durationMs, 'right'), 100, projectDuration)}{speed}<label className="field">音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><button className="danger" onClick={onDelete}>删除片段</button></div>;
   const layout = clip.videoLayout ?? defaultVideoLayout(project, asset);
   const layoutNumber = (label: string, value: number, patch: (next: number) => Partial<VideoLayout>, max: number) => <label className="field">{label}<input type="number" min="0" max={max} value={Math.round(value)} onChange={(event) => onUpdateVideoLayout(patch(Number(event.target.value)))} /></label>;
-  return <div className="properties"><p><b>{clip.name}</b></p><p>时间轴移动/裁剪会同步原声；预览画布可拖动图层，八个控制点可缩放。</p>{speed}<div className="video-layout-actions"><button onClick={() => onSetVideoLayoutMode('full')}>全画面</button><button onClick={() => onSetVideoLayoutMode('fit')}>Fit</button><button onClick={() => onSetVideoLayoutMode('fill')}>Fill</button><button onClick={() => onSetVideoLayoutMode('pip')}>画中画</button><button onClick={() => onSetVideoLayoutMode('fit')}>恢复默认</button></div>{layoutNumber('X', layout.x, (x) => ({ x, mode: 'custom' }), project.width)}{layoutNumber('Y', layout.y, (y) => ({ y, mode: 'custom' }), project.height)}{layoutNumber('宽度', layout.width, (width) => ({ width, mode: 'custom' }), project.width)}{layoutNumber('高度', layout.height, (height) => ({ height, mode: 'custom' }), project.height)}<label className="field checkbox-field"><input type="checkbox" checked={layout.keepAspectRatio} onChange={(event) => onUpdateVideoLayout({ keepAspectRatio: event.target.checked })} />保持宽高比</label><label className="field">透明度 {Math.round(layout.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={layout.opacity} onChange={(event) => onUpdateVideoLayout({ opacity: Number(event.target.value), mode: 'custom' })} /></label><label className="field">原声音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" disabled={clip.muted} value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><label className="field checkbox-field"><input type="checkbox" checked={clip.muted ?? false} onChange={(event) => onUpdate({ muted: event.target.checked })} />静音原声</label><button className="danger" onClick={onDelete}>删除视频片段</button></div>;
+  return <div className="properties"><p><b>{clip.name}</b></p><p>时间轴移动/裁剪会同步原声；预览画布可拖动图层，八个控制点可缩放。</p>{speed}<div className="video-layout-actions"><button onClick={() => onSetVideoLayoutMode('full')}>全画面</button><button onClick={() => onSetVideoLayoutMode('fit')}>Fit</button><button onClick={() => onSetVideoLayoutMode('fill')}>Fill</button><button onClick={() => onSetVideoLayoutMode('pip')}>画中画</button><button onClick={() => onSetVideoLayoutMode('fit')}>恢复默认</button><button className="crop-entry" onClick={onStartCrop}>{cropEditing ? '正在裁切…' : '裁切'}</button></div>{layoutNumber('X', layout.x, (x) => ({ x, mode: 'custom' }), project.width)}{layoutNumber('Y', layout.y, (y) => ({ y, mode: 'custom' }), project.height)}{layoutNumber('宽度', layout.width, (width) => ({ width, mode: 'custom' }), project.width)}{layoutNumber('高度', layout.height, (height) => ({ height, mode: 'custom' }), project.height)}<label className="field checkbox-field"><input type="checkbox" checked={layout.keepAspectRatio} onChange={(event) => onUpdateVideoLayout({ keepAspectRatio: event.target.checked })} />保持宽高比</label><label className="field">透明度 {Math.round(layout.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={layout.opacity} onChange={(event) => onUpdateVideoLayout({ opacity: Number(event.target.value), mode: 'custom' })} /></label><label className="field">原声音量 {Math.round(clip.volume * 100)}%<input type="range" min="0" max="1" step="0.05" disabled={clip.muted} value={clip.volume} onChange={(event) => onUpdate({ volume: Number(event.target.value) })} /></label><label className="field checkbox-field"><input type="checkbox" checked={clip.muted ?? false} onChange={(event) => onUpdate({ muted: event.target.checked })} />静音原声</label><button className="danger" onClick={onDelete}>删除视频片段</button></div>;
 }

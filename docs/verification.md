@@ -13,7 +13,7 @@
 | 音频、时长与层级 | 已实现（代码） | 拦截器仅替换 `video` 字段，保留原 `audio` PCM、时间戳、Sprite `time.playbackRate`、布局、透明度和 zIndex；因此不改变原声混音、倍速或视频层级。 |
 | 自动检查 | 通过 | `sourceCropPrototype` 单测验证归一化边界及 1280×720 中央 50% 对应的 `(320,180,640,360)` 源像素矩形；`npm run typecheck`、Vitest 72/72、`npm run build` 均通过。工作台 Playwright 为 5 passed / 1 skipped，其中新增 URL 开关可见性与默认关闭检查。 |
 
-限制：远程 Chromium 缺少完整 WebCodecs，无法实际解码或编码视频，故本记录不能宣称真实预览/导出已经通过。必须以 README 第 28 项在本地 Chrome/Edge 检查中央内容、边缘排除、原声与导出一致性；验证通过前不得继续 Phase 6.3 B/C。
+限制：远程 Chromium 缺少完整 WebCodecs，无法实际解码或编码视频，故本记录不能宣称真实预览/导出已经通过。必须以 README 第 28、29 项在本地 Chrome/Edge 检查中央内容、边缘排除、原声与导出一致性。
 
 ## Phase 6.3 B：sourceCrop 工程模型与适配器集成
 
@@ -22,6 +22,14 @@
 WebAVAdapter 将有效 `sourceCrop` 放入视频媒体签名，因此只会重建受影响视频 Sprite；它在源时间 `MP4Clip.split()` 完成后安装逐帧裁切拦截器。裁切帧以裁切区域自身像素尺寸构造新的 `VideoFrame`，避免先放大到源画幅导致自由比例裁切变形。`sourceCropDisplayLayout()` 在 `keepAspectRatio` 下将裁切后的实际比例 Fit/Fill 到既有 `videoLayout` 目标盒；`keepAspectRatio: false` 则保留用户显式指定的拉伸行为。预览与导出同样通过 Clip clone 复制拦截器。
 
 自动检查：新增 sourceCrop 默认值、边界移动/八方向缩放、非 16:9 裁切无变形布局、分割继承与旧工程兼容单测。真实 WebCodecs 预览/MP4 仍待本地 Chrome/Edge 验收，不能因这些逻辑检查而标记通过。
+
+## Phase 6.3 C：可逆裁切模式与八控制点
+
+选中视频后，右侧属性面板的“裁切”进入独立会话。会话期间适配器以临时完整 `sourceCrop` 重建**仅该视频**的 Sprite，使用户始终在完整原画上编辑当前保存的选区；遮罩、裁切框、八个边/角手柄与内部移动均使用现有 Pointer Events 和同步 ref 拖拽会话，CSS 像素先转换到 1280×720 工程坐标，再换算为该视频布局盒的归一化源坐标。
+
+确认会调用 `updateSourceCrop()` 并退出临时覆盖，随后由已验证的 MP4Clip 帧拦截路径重建目标 Sprite；取消只移除覆盖而不写项目，重置只修改会话草稿。裁切比例提供自由、16:9、9:16、1:1、4:3；比例锁定时手柄使用源坐标中的等效比例。裁切模式和既有 `videoLayout` 八控制点互斥：前者修改源画面，后者仅修改画布位置/尺寸。
+
+自动检查覆盖默认/旧工程、移动边界、自由与锁定比例手柄、Fit 无变形、分割继承。最终回归：`npm run typecheck`、Vitest 77/77、`npm run build` 均通过；本地库 Playwright 为 5 passed / 1 skipped。真实裁切 UI、两视频独立裁切、画中画、取消/重置、变速/分割组合与导出仍必须按 README 第 29 项在本地 Chrome/Edge 验收；远程 E2E 不得标记为媒体通过。
 
 ## Phase 6.2.2：波形振幅显示优化
 
