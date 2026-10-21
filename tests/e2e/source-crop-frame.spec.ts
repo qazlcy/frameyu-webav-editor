@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('source-crop interceptor removes excluded pixels from a synthetic VideoFrame', async ({ page }) => {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   await page.addScriptTag({
     type: 'module',
     content: `
@@ -85,7 +85,7 @@ test('source-crop interceptor removes excluded pixels from a synthetic VideoFram
 });
 
 test('source-crop Canvas fallback copies only retained pixels', async ({ page }) => {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   await page.addScriptTag({
     type: 'module',
     content: `

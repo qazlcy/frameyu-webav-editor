@@ -3,3 +3,13 @@ dist/
 playwright-report/
 test-results/
 third_party/browser-libs/
+
+.env
+.env.*
+!.env.example
+*.log
+ai-test-results/
+demo-media/
+
+# Generated browser verification screenshots
+docs/home/scroll-fix/

@@ -79,7 +79,10 @@ export class MediaContentDeduplicator {
   private hash(file: File) {
     let task = this.hashByFile.get(file);
     if (!task) {
-      task = this.hashFile(file);
+      task = this.hashFile(file).catch((error) => {
+        this.hashByFile.delete(file);
+        throw error;
+      });
       this.hashByFile.set(file, task);
     }
     return task;

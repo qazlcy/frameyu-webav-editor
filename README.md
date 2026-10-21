@@ -1,19 +1,23 @@
 # 帧语智能编辑器 WebAV Demo
 
-浏览器本地视频编辑 Demo：导入多个 MP4 视频素材，顺序剪辑或加入多个视频轨叠加；再添加 MP3/WAV 背景音乐或音效、手动字幕，在 WebAV 画布预览后导出烧录字幕和混音的 MP4。媒体不会上传到服务端。
+**首次使用请先看 [Windows 完整操作说明](docs/OPERATION-GUIDE.zh-CN.md)**：下载与安装 → 启动 → Studio/Editor 区别 → Mock 演示 → 导出 → 真实 API 配置 → 故障排查。
 
-## 启动
+本版保留两个独立编辑入口，不合并界面；当前工程不在两个页面之间同步。
 
-当前开发环境的 Node 22 安装在 `/home/lth/.local/node/bin`。新终端先执行：
+浏览器本地视频编辑 Demo：导入多个 MP4 视频素材，顺序剪辑或加入多个视频轨叠加；再添加 MP3/WAV 背景音乐或音效、手动字幕，在 WebAV 画布预览后导出烧录字幕和混音的 MP4。手动编辑与 Mock 模式在本机处理；真实 AI 模式仅在用户确认后发送有限抽帧和必要描述，不上传完整视频或音频。
 
-```bash
-export PATH=/home/lth/.local/node/bin:$PATH
-cd /home/lth/webav/v1.0/editor-demo
-npm install
-npm run dev -- --host 0.0.0.0
-```
+## Windows 启动与本次适配
 
-通过 VS Code Remote 的端口转发，在桌面 Chrome 或 Edge 打开 `http://localhost:5173`。首次验证使用短 H.264/AAC MP4（≤30 秒、720p）及 MP3/WAV（≤60 秒）。
+本目录基于 GitHub main 的 64924704ae288aba0e95b8f229e8f19e182152b9，保留其素材抽屉、裁剪性能优化和导出配置，并接入本地首页、Studio 智能剪辑及 Windows 启动器。详细记录见 [适配报告](docs/INTEGRATION-20261021.md)。
+
+1. 安装 Node.js 22.10+（含 npm），在包含 package.json 的目录运行 `npm.cmd ci`。
+2. 双击 `start-ai-mock.cmd`，或运行 `npm.cmd run dev:ai:mock`。
+3. 在 Chrome / Edge 打开 http://127.0.0.1:5173 ：首页“创作”进入 `/studio`；页脚“原版编辑器”进入保留远程最新功能的 `/editor`。
+4. 真实联调按 [Windows AI 启动说明](WINDOWS-AI-启动说明.md) 在本机填写 server/.env 并使用 `start-ai-real.cmd`。本次没有调用付费 API。
+
+如果提示 npm 不存在，双击启动器会寻找已安装的 Node，直接启动已有依赖；首次安装依赖仍需含 npm 的 Node.js。不要同时运行旧目录和新目录的默认服务，二者都占用 5173 / 8787。
+
+以下功能列表主要描述 `/editor`；AI 方案确认、整批撤销在 `/studio`。两者共享工程类型及 WebAV 引擎，未新增第三个演示站点。
 
 ## 功能范围
 
@@ -37,7 +41,7 @@ npm run dev -- --host 0.0.0.0
 - “+ 音乐 / + 音效”与波形分析完全解耦：单击立即创建一个工程片段，可在首条视频导入前暂存；视频加入后再按视频项目时长应用常规边界。每次点击均有 `[TimelineAdd]` 控制台追踪，缺少对应轨道会显示错误而非静默失败。
 - 选中视频、背景音乐或音效片段后，可将播放头置于片段内部，通过工具栏“分割”、右键菜单或非输入焦点下的 `S` 分割。左右片段拥有独立 ID、保持原轨道/素材/音量/视频布局；字幕不支持分割。
 - 视频、背景音乐和音效片段支持 0.5×、0.75×、1×、1.25×、1.5×、2×。工程时长与源媒体截取时长分别保存；变速保留源区间并重算时间轴占用长度。同轨视频减速若会重叠会被拒绝。WebAV 1.2.8 使用线性插值处理音频变速，音调会随速度改变。
-- 当前不包含转场、遮罩、色度抠图、关键帧动画、自动字幕、FFmpeg、云端保存、撤销重做、波形或移动端适配。
+- 当前不包含转场、遮罩、色度抠图、关键帧动画、语音识别、FFmpeg 或云端保存。/editor 无撤销重做；/studio 支持会话内撤销重做及整批 AI 计划撤销。编辑器主要面向桌面窗口。
 
 ## 架构
 
@@ -53,17 +57,12 @@ npm run dev -- --host 0.0.0.0
 npm run typecheck
 npm run test
 npm run build
-PLAYWRIGHT_BROWSERS_PATH=0 npm run test:e2e
+# Windows PowerShell，使用已安装的 Edge
+$env:PLAYWRIGHT_CHANNEL='msedge'
+npm.cmd run test:e2e -- --workers=1
 ```
 
-远程 Ubuntu 无 sudo 权限，因此可先在项目内解包 Chromium 所需运行库，再执行：
-
-```bash
-./scripts/setup-playwright-libs.sh
-npm run test:e2e:local-libs
-```
-
-该方案已使 Playwright Chromium 成功启动。但当前远程无头 Chromium 不提供完整 WebCodecs（`VideoDecoder`、`VideoEncoder`、`AudioDecoder`、`AudioEncoder` 均缺失），E2E 会明确显示为 **skipped**，而不应当当作真实导出通过。请使用本机 Chrome/Edge 经端口转发执行下列手工验证。
+E2E 自动启动独立的本机 5175 / 8789 测试服务，不读取 .env，禁止上游网络请求，也不复用旧服务。本次 Windows Edge 的 13 项测试全部通过，含真实本地 MP4 编码和重新解码；这不代表真实 AI API 已验证。
 
 ## 手工验证清单
 

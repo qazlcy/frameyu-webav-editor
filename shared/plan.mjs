@@ -1,0 +1,21 @@
+export const LIMITS = Object.freeze({assets:3, framesPerAsset:3, frames:9, frameChars:200000, bodyBytes:2000000, outputChars:24000, segments:24, titles:12, durationMs:300000});
+const fail = message => { throw new Error(message); };
+export function exact(value, keys) { if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k=>!keys.includes(k)) || keys.some(k=>!(k in value))) fail('结构字段不符合白名单'); }
+export function integer(v,min,max) { if (!Number.isSafeInteger(v)||v<min||v>max) fail('时间或尺寸超出范围（时间必须为整数毫秒）'); }
+export function textValue(v,max) { if(typeof v!=='string'||!v.trim()||v.length>max) fail('文本为空或超出长度限制'); }
+export function validateAssets(assets) {
+ if(!Array.isArray(assets)||!assets.length||assets.length>LIMITS.assets) fail('请选择 1–3 个视频');
+ const ids=new Set(); for(const a of assets){exact(a,['id','durationMs','width','height']);textValue(a.id,100);if(ids.has(a.id))fail('素材 ID 重复');ids.add(a.id);integer(a.durationMs,100,86400000);integer(a.width,1,16384);integer(a.height,1,16384);} return assets;
+}
+export function validatePlan(plan,assets){
+ validateAssets(assets);exact(plan,['version','unit','segments','titles','notes']);if(plan.version!==1||plan.unit!=='ms')fail('仅支持 v1 毫秒计划');
+ if(!Array.isArray(plan.segments)||!plan.segments.length||plan.segments.length>LIMITS.segments)fail('片段数量无效');
+ let duration=0;for(const s of plan.segments){exact(s,['op','assetId','inMs','outMs','volume']);if(s.op!=='cut')fail('不支持的操作');const a=assets.find(a=>a.id===s.assetId);if(!a)fail('未知素材 ID');integer(s.inMs,0,a.durationMs);integer(s.outMs,s.inMs+100,a.durationMs);if(typeof s.volume!=='number'||!Number.isFinite(s.volume)||s.volume<0||s.volume>1)fail('音量必须在 0–1');duration+=s.outMs-s.inMs;}
+ if(duration>LIMITS.durationMs)fail('成片不能超过 5 分钟');
+ if(!Array.isArray(plan.titles)||plan.titles.length>LIMITS.titles)fail('文字数量无效');
+ for(const t of plan.titles){exact(t,['op','text','startMs','endMs','position','source']);if(t.op!=='title'||!['top','center','bottom'].includes(t.position)||!['user','generated'].includes(t.source))fail('不支持的文字操作');textValue(t.text,120);integer(t.startMs,0,duration);integer(t.endMs,t.startMs+100,duration);}
+ if(!Array.isArray(plan.notes)||plan.notes.length>8)fail('说明数量无效');plan.notes.forEach(n=>textValue(n,300));return plan;
+}
+export function validateRequest(r){exact(r,['mode','consent','prompt','assets','frames']);if(!['mock','real'].includes(r.mode)||r.consent!==true)fail('需要主动确认数据发送');textValue(r.prompt,2000);validateAssets(r.assets);if(!Array.isArray(r.frames)||r.frames.length!==r.assets.length*3)fail('每个素材需要 3 张抽帧');for(const a of r.assets){const frames=r.frames.filter(f=>f.assetId===a.id);if(frames.length!==3||new Set(frames.map(f=>f.timeMs)).size!==3)fail('抽帧时间无效');}for(const f of r.frames){exact(f,['assetId','timeMs','image']);const a=r.assets.find(a=>a.id===f.assetId);if(!a)fail('抽帧素材无效');integer(f.timeMs,0,a.durationMs-1);if(typeof f.image!=='string'||f.image.length>LIMITS.frameChars||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(f.image))fail('仅接受有限大小的 JPEG 抽帧');}return r;}
+export function validateAnalysis(value,frames){exact(value,['frames']);if(!Array.isArray(value.frames)||value.frames.length!==frames.length)fail('视觉结果帧数不符');const seen=new Set();for(const f of value.frames){exact(f,['assetId','timeMs','description']);const key=f.assetId+':'+f.timeMs;if(seen.has(key)||!frames.some(x=>x.assetId===f.assetId&&x.timeMs===f.timeMs))fail('视觉结果时间不符');seen.add(key);textValue(f.description,600);}return value;}
+export function mockPlan(r){let remaining=Math.min(300000,Math.max(100,Number(r.prompt.match(/(\d+)\s*秒/)?.[1]??20)*1000));const segments=[];for(const a of r.assets){const length=Math.min(a.durationMs,remaining);if(length<100)break;segments.push({op:'cut',assetId:a.id,inMs:0,outMs:length,volume:/降低|降音|静音/.test(r.prompt)?(/静音/.test(r.prompt)?0:.25):1});remaining-=length;}const duration=segments.reduce((n,s)=>n+s.outMs,0);return validatePlan({version:1,unit:'ms',segments,titles:/标题|字幕/.test(r.prompt)?[{op:'title',text:'Mock 测试标题（非模型生成）',startMs:0,endMs:Math.min(3000,duration),position:'top',source:'generated'}]:[],notes:['Mock 规则测试：按所选素材顺序取开头，不分析画面，不代表真实 AI 效果。',...(remaining>0?['素材不足目标时长，未补帧或重复素材。']:[])]},r.assets);}

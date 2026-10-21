@@ -102,3 +102,20 @@ body { overflow: hidden; }
 @media (max-width: 760px) { .material-library-columns { grid-template-columns: 1fr; }.material-library-columns > section + section { border-top: 1px solid #35435d; border-left: 0; }.material-library-dialog { max-height: calc(100dvh - 48px); overflow: auto; } }
 
 .export-backdrop { position: fixed; z-index: 72; inset: 0; display: grid; place-items: center; padding: 24px; background: #060912a8; }.export-dialog { width: min(450px, 100%); border: 1px solid #4c608a; border-radius: 10px; background: #1b2433; box-shadow: 0 20px 56px #000b; }.export-dialog > header, .export-dialog > footer { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; }.export-dialog > header { border-bottom: 1px solid #35435d; }.export-dialog > footer { justify-content: flex-end; gap: 8px; border-top: 1px solid #35435d; }.export-dialog header p { margin: 0 0 3px; color: #8fa5cd; font-size: 10px; }.export-dialog h2 { margin: 0; color: #eff4ff; font-size: 17px; }.export-dialog .secondary { padding: 8px 12px; border: 1px solid #3d4d68; border-radius: 7px; color: #c8d3e8; background: #293446; }.export-fields { display: grid; gap: 14px; padding: 18px; }.export-fields > label, .export-fields fieldset { display: grid; gap: 6px; color: #cbd8ed; font-size: 12px; }.export-fields input, .export-fields select { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #415273; border-radius: 5px; color: #eaf1fc; background: #121925; }.export-fields small { color: #8797ae; font-size: 10px; }.export-fields fieldset { padding: 9px; border: 1px solid #364762; border-radius: 6px; }.export-fields legend { padding: 0 4px; color: #aebed5; font-size: 11px; }.export-fields fieldset label { display: flex; align-items: center; gap: 6px; color: #c8d5e9; }.export-fields fieldset input { width: auto; accent-color: #6686e8; }
+
+/* Imported Studio styles, scoped to avoid changing the upstream editor. */
+.studio .video-thumbnail-strip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; background: #192b40; }
+.studio .video-thumbnail-window { position: absolute; top: 0; bottom: 0; display: flex; }
+.studio .video-thumbnail-cell { position: relative; flex: 1; min-width: 0; overflow: hidden; border-right: 1px solid #172334; }
+.studio .video-thumbnail-cell img { position: absolute; max-width: none; object-fit: fill; }
+.studio .thumbnail-placeholder { display: block; padding: 18px 6px 0; color: #a7b9ce; font-size: 10px; }
+
+.studio .timeline-toolbar > select, .studio .export-dialog input, .studio .export-dialog select { border: 1px solid #3d4d68; border-radius: 5px; color: #dce7fa; background: #263348; padding: 5px; }
+.studio .export-dialog { width: min(440px, calc(100vw - 48px)); padding: 24px; border: 1px solid #4c608a; border-radius: 10px; background: #1c2433; color: #edf3ff; box-shadow: 0 18px 52px #000a; }
+.studio .export-dialog::backdrop { background: #060912b8; }
+.studio .export-dialog h2 { margin-top: 0; }
+.studio .export-dialog label { display: grid; gap: 7px; margin: 16px 0 7px; font-size: 13px; }
+.studio .export-dialog p, .studio .export-dialog small { font-size: 12px; color: #b9c6da; line-height: 1.6; overflow-wrap: anywhere; }
+.studio .export-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.studio .export-actions button { padding: 8px 16px; border: 1px solid #4c608a; border-radius: 6px; background: #293446; color: #edf3ff; }
+.studio .export-actions .primary { background: #5368ea; }

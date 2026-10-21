@@ -1,0 +1,27 @@
+帧语首页摄影素材来源与许可
+核实日期：2026-10-20
+
+1. forest-bridge.webp / forest-bridge-mobile.webp / forest-bridge-thumb.webp
+作者：Martin Damboldt
+作品：Gray Bridge and Trees（德国 Rakotzbrücke 森林石桥倒影）
+作品页：https://www.pexels.com/photo/gray-bridge-and-trees-814499/
+原图下载：https://images.pexels.com/photos/814499/pexels-photo-814499.jpeg
+核实：作品页列出作者、6010×4005 尺寸、License Free，并链接 Pexels License。
+用途：首页主视觉、移动端主视觉、胶片缩略图。
+本地变体：1920px / 800px / 600px 宽，WebP，质量参数 82。
+
+2. sunset-hills.webp
+作者：Christian Heitz
+作品：Brown and Green Mountain View Photo（夕照丘陵与田野）
+作品页：https://www.pexels.com/photo/brown-and-green-mountain-view-photo-842711/
+原图下载：https://images.pexels.com/photos/842711/pexels-photo-842711.jpeg
+核实：作品页列出作者、5472×3648 尺寸、License Free，并链接 Pexels License。
+用途：首页胶片缩略图；600px 宽，WebP，质量参数 82。
+
+许可：https://www.pexels.com/license/
+官方许可允许免费下载、使用及修改，并明确列出网站、博客、App 和产品推广用途；不要求署名，本项目仍保留作者记录。
+限制包括不得暗示人物/品牌背书、不得销售未经改动的副本、不得作为图库平台再分发、不得用作商标。本项目仅将照片作为页面配图使用。
+处理：通过 Pexels 图片服务缩放/压缩为 WebP，本地存储；CSS 自适应裁切、亮度与饱和度调整，局部文字遮罩。未调用付费 API，非 AI 生成图片。
+摄影不是项目内示例视频、不是可播放视频、也不代表摄影师对产品背书。
+
+其余工作区与 AI 面板图片：本项目实际页面截图，不是第三方产品截图。

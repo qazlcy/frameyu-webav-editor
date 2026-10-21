@@ -169,18 +169,27 @@ export class WebAVAdapter {
     if (!durationMs) throw new Error('请先向视频轨添加有效视频。');
     const combinator = await this.canvas.createCombinator({ width: project.width, height: project.height });
     const unsubscribeProgress = combinator.on('OutputProgress', onProgress ?? (() => undefined));
+    let outputError: Error | undefined;
+    const unsubscribeError = combinator.on('error', (error) => { outputError = error; });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const reader = combinator.output({ maxTime: msToUs(durationMs) }).getReader();
+      reader = combinator.output({ maxTime: msToUs(durationMs) }).getReader();
       const chunks: Uint8Array[] = [];
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         chunks.push(value);
       }
+      if (outputError) throw outputError;
       console.log('[WebAV] MP4 export completed', { chunks: chunks.length, durationMs });
       return new Blob(chunks, { type: 'video/mp4' });
     } finally {
       unsubscribeProgress();
+      unsubscribeError();
+      if (reader) {
+        try { await reader.cancel(); } catch { /* Preserve the encoding error. */ }
+        reader.releaseLock();
+      }
       combinator.destroy();
       // Return to a decode-light editor graph even if encoding or file writing fails.
       await this.sync(project, 0, 'preview');

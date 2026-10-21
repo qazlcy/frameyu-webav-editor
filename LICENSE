@@ -1,0 +1,9 @@
+许可状态说明 / License status
+
+本次迁移所依据的工作区未提供根目录 LICENSE 文件，也未在 package.json 声明项目许可证。
+本文件仅记录该事实，不授予新的开源许可，不替代权利人的授权。
+用户授权整理本地源码用于迁移、展示和继续修改；对外分发、再许可或商业使用前应另行核实项目权利。
+
+第三方依赖遵循各自许可证；锁文件保留许可元数据，third-party-licenses 保留已安装依赖包随附的许可/通知文本。
+首页照片来源及许可记录见 public/home/photos/SOURCES.txt。
+其他素材来源及已知许可缺口见 THIRD-PARTY-NOTICES.md。

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('keeps the source crop confirmation toolbar inside the preview frame', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   const frame = page.locator('.preview-frame');
   await frame.evaluate((node) => {
     node.insertAdjacentHTML('beforeend', '<div class="source-crop-editor" data-audit="editor" style="inset:0"></div><div class="source-crop-toolbar" data-audit="toolbar"><button type="button">取消裁切</button><button type="button" class="primary">确认裁切</button></div>');

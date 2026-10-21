@@ -1,0 +1,14 @@
+import { it,expect,vi } from 'vitest';
+import { emptyProject } from '../src/editor/types';
+import { addAsset,appendVideoClip } from '../src/editor/commands';
+import { applyTransaction,buildPlanProject,mediaInfo } from '../src/ai/applyPlan';
+import { historyReducer } from '../src/demo/history';
+import { mockPlan } from '../shared/plan.mjs';
+const asset={id:'a',name:'Test',type:'video' as const,mimeType:'video/mp4',durationMs:25000,width:1280,height:720};
+const base=()=>appendVideoClip(addAsset(emptyProject(),asset),asset);
+const setup=()=>{const p=base(),assets=mediaInfo(p,['a']),plan=mockPlan({prompt:'剪成20秒加标题降低原声',assets});return {p,assets,plan};};
+it('applies cut, order, volume and title to real project, one undo restores all',async()=>{const {p,assets,plan}=setup();plan.segments=[{op:'cut',assetId:'a',inMs:5000,outMs:15000,volume:.2},{op:'cut',assetId:'a',inMs:0,outMs:5000,volume:0}];let history={past:[] as typeof p[],present:p,future:[] as typeof p[]};await applyTransaction(p,()=>history.present,plan,assets,async()=>{},next=>{history=historyReducer(history,{type:'edit',project:next});});expect(history.present.clips[0]).toMatchObject({sourceStartMs:5000,durationMs:10000,volume:.2});expect(history.present.clips[1].startMs).toBe(10000);expect(history.present.clips[2].text).toContain('Mock');expect(history.present.tracks[1].clipIds).toHaveLength(2);expect(history.past).toHaveLength(1);history=historyReducer(history,{type:'undo'});expect(history.present).toBe(p);});
+it('failed runtime sync never commits and restores old runtime',async()=>{const {p,assets,plan}=setup(),commit=vi.fn(),sync=vi.fn().mockRejectedValueOnce(Error('decode')).mockResolvedValueOnce(undefined);await expect(applyTransaction(p,()=>p,plan,assets,sync,commit)).rejects.toThrow('decode');expect(commit).not.toHaveBeenCalled();expect(sync).toHaveBeenLastCalledWith(p);});
+it('stale project rejects before sync',async()=>{const {p,assets,plan}=setup(),sync=vi.fn();await expect(applyTransaction(p,()=>({...p}),plan,assets,sync,vi.fn())).rejects.toThrow('改变');expect(sync).not.toHaveBeenCalled();});
+it('invalid plan leaves input untouched',()=>{const {p,assets,plan}=setup(),before=JSON.stringify(p);plan.segments[0].outMs=999999;expect(()=>buildPlanProject(p,plan,assets)).toThrow();expect(JSON.stringify(p)).toBe(before);});
+it('rejects locked tracks',()=>{const {p,assets,plan}=setup();p.tracks[0].locked=true;expect(()=>buildPlanProject(p,plan,assets)).toThrow('锁定');});

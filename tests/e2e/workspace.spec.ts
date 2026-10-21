@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('resizes the workspace and keeps a vertically scrollable dynamic track list aligned', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
 
   const workspace = page.locator('.workspace');
   await expect(workspace).toBeVisible();
@@ -61,7 +61,7 @@ test('resizes the workspace and keeps a vertically scrollable dynamic track list
 
 test('keeps the material drawer and direct import actions above the independently scrolling material list', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   const panel = page.locator('.asset-panel');
   const actions = page.locator('.material-actions');
   const list = page.locator('.material-list');
@@ -113,7 +113,7 @@ test('keeps the material drawer and direct import actions above the independentl
 });
 
 test('manages an additional empty video track without disturbing the existing timeline', async ({ page }) => {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('.track')).toHaveCount(4);
   await page.getByRole('button', { name: '+ 视频轨' }).click();
   await expect(page.locator('.track')).toHaveCount(5);
@@ -126,7 +126,7 @@ test('manages an additional empty video track without disturbing the existing ti
 });
 
 test('draws the decoder-independent Canvas waveform self-test with visible pixels', async ({ page }) => {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   await page.locator('.waveform-diagnostics summary').click();
   await page.getByRole('button', { name: '显示 Canvas 自检' }).click();
   const canvas = page.locator('.waveform-canvas-self-test canvas');
@@ -141,8 +141,8 @@ test('draws the decoder-independent Canvas waveform self-test with visible pixel
 });
 
 test('keeps the real source-crop prototype explicitly URL-gated', async ({ page }) => {
-  await page.goto('/?sourceCropPrototype=1', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor?sourceCropPrototype=1', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('裁切原型：所有视频仅保留源画面中央 50%')).toBeVisible();
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/editor', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('裁切原型：所有视频仅保留源画面中央 50%')).toHaveCount(0);
 });

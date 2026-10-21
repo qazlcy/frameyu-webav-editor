@@ -10,7 +10,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:local-libs": "LD_LIBRARY_PATH=./third_party/browser-libs/rootfs/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=0 playwright test"
+    "test:e2e:local-libs": "LD_LIBRARY_PATH=./third_party/browser-libs/rootfs/usr/lib/x86_64-linux-gnu PLAYWRIGHT_BROWSERS_PATH=0 playwright test",
+    "server": "node server/index.mjs",
+    "server:mock": "node server/index.mjs --mock",
+    "dev:ai": "node scripts/start-ai.mjs",
+    "dev:ai:mock": "node scripts/start-ai.mjs --mock"
   },
   "dependencies": {
     "@webav/av-canvas": "1.2.8",
