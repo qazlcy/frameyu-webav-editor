@@ -1,5 +1,29 @@
 # WebAV 验证记录
 
+## 第三轮局部校准：sourceCrop、素材库入口与缩略帧密度
+
+本轮基线为本地分支 `fix/editor-ui-crop-performance` 的 `ee93918`。此前的性能改动使普通预览不再安装 `tickInterceptor`，因而确认裁切后仅显示遮罩、画面本身不会变化；这是本轮定位到的直接预览根因。现在 `WebAVAdapter` 对每个有效 `TimelineClip.sourceCrop` 在预览与导出图中都安装相同的帧变换。变换优先使用 `new VideoFrame(sourceFrame, { visibleRect })`，无法使用时才复用 `OffscreenCanvas` 逐帧拷贝；确认、取消和进入裁切模式通过临时覆盖只重建目标视频 Sprite，拖动手柄仍只修改 React 草稿。
+
+安装包源码核查表明 WebAV 1.2.8 的 `MP4Clip.clone()` 会复制 `tickInterceptor`，`AVCanvas.createCombinator()` 将当前 Sprite 的 Clip 交给 `OffscreenSprite`，因此导出图复用同一个帧拦截规则。自动检查可验证裁切数据、像素矩形、布局及调用路径；远程 Chromium 仍缺完整 WebCodecs，不能据此声称真实帧或 MP4 已通过。本地 Chrome/Edge 必须以 README 第 29 项检查：中央 50% 裁切确认后的预览、导出复播、两视频独立裁切、画中画、取消/重置、分割和倍速组合。
+
+素材库入口已改为无斜切的竖向矩形，其 Grid 行高与右侧三个直接操作按钮自动相同；向右抽屉宽度收窄到 236px，并保留悬停、点击固定、外部点击/Escape 关闭和分类弹窗。视频缩略图缓存对普通时长素材按源秒生成，对长素材上限为 180 帧；显示层按每个片段的时间轴秒取样，时间到源时间转换继续使用 `sourceStartMs`、`sourceDurationMs` 和 `playbackRate`。新增 0.5× 映射与缓存上限单测。
+
+本轮命令结果：`npm run typecheck` 通过，`npm run test` 为 81/81，`npm run build` 通过，`npm run test:e2e:local-libs` 为 5 passed / 1 skipped。跳过项为真实 WebCodecs/MP4 媒体测试，不计为通过。
+
+## 素材面板与媒体功能综合优化（本地分支 `feat/materials-media-optimizations`）
+
+基线：`f1fe014`。本轮没有使用 `editor-demo-pr1`，也没有修改远程分支或媒体合成架构。
+
+| 项目 | 代码结论 | 自动检查 | 待本地 Chrome/Edge 验证 |
+| --- | --- | --- | --- |
+| 素材库抽屉 | 已实现 | 类型检查、单测、构建通过；Playwright 用例已更新但服务器缺少 Chromium 可执行文件 | 悬停/固定、弹窗、本地视频/音乐/音效导入，确认云端区始终仅为未接入提示 |
+| 音乐/音效去重 | 已实现 | `MediaContentDeduplicator` 沿用同一 Worker SHA-256，新增并发/跨分类单测 | 用同一 MP3/WAV 分别作为音乐和音效导入；不同文件名相同内容应定位既有素材，同名不同内容应允许 |
+| 细线波形 | 已实现 | 类型检查、单测、构建通过 | 在不同缩放及轨高下确认 Peak 辅助线与 RMS 主线清楚、静音保持中线且不影响裁剪手柄 |
+| 视频连续缩略帧 | 已实现 | 缓存调度、按源时间取样及裁切显示有单测覆盖 | 确认左右裁剪、分割、0.5×/2×、sourceCrop 与跨轨后缩略帧对应正确源画面 |
+| MP4 导出配置 | 已实现 | 文件名规范化单测、类型检查、构建通过 | 修改文件名；测试浏览器下载、系统另存为、取消保存不启动编码；复播导出文件验证音视频、字幕与裁切 |
+
+本机本轮最终命令：`npm run typecheck`、`npm run test`（80/80）、`npm run build` 均通过。`npm run test:e2e` 未能启动：Playwright Chromium 可执行文件缺失（`chromium_headless_shell-1161`），故 6 个 E2E 均未执行，不能标记为通过，更不能替代真实 WebCodecs 媒体验收。
+
 日期：2026-10-13。所有时间均以浏览器客户端的本地 WebCodecs 能力为准。
 
 ## Phase 6.3 A：真实源画面裁切原型

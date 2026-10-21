@@ -4,12 +4,13 @@ import { emptyProject, type Asset, type AudioKind, type CaptionDraft, type Edito
 import { DEFAULT_WORKSPACE_LAYOUT, MIN_PREVIEW_WIDTH, WORKSPACE_DIVIDER_SIZE, normaliseWorkspaceLayout, type WorkspaceLayout } from './editor/layoutMath';
 import { TRACK_HEADER_WIDTH_PX, clamp, getClipSourceDurationMs, timelineContentWidth, timeToTimelineX, viewportXToTime } from './editor/timelineMath';
 import { WebAVAdapter, type CapabilityReport } from './webav/WebAVAdapter';
-import { scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache } from './timeline/mediaPreviewCache';
+import { sampleThumbnailsForClip, scheduleMediaPreviewAnalysis, TimelineMediaPreviewCache, type VideoThumbnail } from './timeline/mediaPreviewCache';
 import type { WaveformAnalysisStatus } from './timeline/waveformAnalysis';
 import { WaveformCanvas, WAVEFORM_CANVAS_SELF_TEST_DATA } from './timeline/WaveformCanvas';
 import { DEFAULT_WAVEFORM_DISPLAY_SETTINGS, normaliseWaveformDisplaySettings, type WaveformDisplaySettings } from './timeline/waveformDisplay';
-import { hashVideoFile, VideoContentDeduplicator } from './editor/videoDedup';
+import { hashMediaFile, MediaContentDeduplicator } from './editor/videoDedup';
 import { FULL_SOURCE_CROP, getSourceCrop, moveSourceCrop, resizeSourceCrop } from './editor/sourceCrop';
+import { normaliseMp4Filename } from './export/exportFile';
 
 const initialEditor: EditorState = { playheadMs: 0, zoom: 100, playback: 'idle', status: 'ready', message: '等待导入视频素材' };
 const formatTime = (timeMs: number) => `${String(Math.floor(timeMs / 60000)).padStart(2, '0')}:${String(Math.floor(timeMs / 1000) % 60).padStart(2, '0')}.${String(Math.floor(timeMs % 1000 / 10)).padStart(2, '0')}`;
@@ -19,11 +20,13 @@ const LAYOUT_STORAGE_KEY = 'frameyu-workspace-layout-v1';
 const WAVEFORM_DISPLAY_STORAGE_KEY = 'frameyu-waveform-display-v1';
 type LayoutState = WorkspaceLayout;
 type MaterialFilter = 'all' | 'video' | 'music' | 'sfx' | 'caption';
+type MaterialLibraryType = Extract<MaterialFilter, 'video' | 'music' | 'sfx'>;
 type LayoutDrag = { kind: 'asset' | 'property' | 'timeline'; pointerId: number; startClient: number; startValue: number };
 type ClipContextMenu = { clipId: string; x: number; y: number };
-type DuplicateVideoImport = { assetId: string; existingName: string; importedName: string };
+type DuplicateMediaImport = { assetId: string; existingName: string; importedName: string; kind: '视频' | '音乐' | '音效' };
 type CropAspectPreset = 'free' | '16:9' | '9:16' | '1:1' | '4:3';
 type CropSession = { clipId: string; initial: SourceCrop; draft: SourceCrop; aspectPreset: CropAspectPreset };
+type ExportSaveMode = 'download' | 'picker';
 
 type DragState =
   | { kind: 'clip'; pointerId: number; clip: TimelineClip; mode: 'move' | 'left' | 'right'; pointerStartMs: number }
@@ -58,12 +61,17 @@ export default function App() {
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const rulerScrollRef = useRef<HTMLDivElement>(null);
   const materialListRef = useRef<HTMLDivElement>(null);
+  const materialActionsRef = useRef<HTMLDivElement>(null);
+  const assetPanelRef = useRef<HTMLElement>(null);
+  const materialDrawerRef = useRef<HTMLDivElement>(null);
+  const materialDrawerCloseTimerRef = useRef<number>();
   const videoInputRef = useRef<HTMLInputElement>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
   const sfxInputRef = useRef<HTMLInputElement>(null);
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const assetFilesRef = useRef(new Map<string, File>());
-  const videoDedupRef = useRef(new VideoContentDeduplicator(hashVideoFile));
+  const videoDedupRef = useRef(new MediaContentDeduplicator(hashMediaFile, 'video'));
+  const audioDedupRef = useRef(new MediaContentDeduplicator(hashMediaFile, 'audio'));
   const timelinePreviewCacheRef = useRef(new TimelineMediaPreviewCache());
   const cacheDisposeTimerRef = useRef<number>();
   const adapterRef = useRef<WebAVAdapter>();
@@ -83,6 +91,11 @@ export default function App() {
   const [pendingTrackFocusId, setPendingTrackFocusId] = useState<string>();
   const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
   const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all');
+  const [materialDrawerOpen, setMaterialDrawerOpen] = useState(false);
+  const [materialDrawerPinned, setMaterialDrawerPinned] = useState(false);
+  const [materialDrawerWidth, setMaterialDrawerWidth] = useState(132);
+  const [audioUploadChoicesOpen, setAudioUploadChoicesOpen] = useState(false);
+  const [materialLibraryType, setMaterialLibraryType] = useState<MaterialLibraryType>();
   const [captionDraft, setCaptionDraft] = useState<CaptionDraft>({ text: '', startMs: 0, endMs: 3000 });
   const [captionComposerOpen, setCaptionComposerOpen] = useState(false);
   const [timelinePreviewVersion, setTimelinePreviewVersion] = useState(0);
@@ -90,8 +103,17 @@ export default function App() {
   const [waveformDisplaySettings, setWaveformDisplaySettings] = useState<WaveformDisplaySettings>(readWaveformDisplaySettings);
   const [runtimeAssetVersion, setRuntimeAssetVersion] = useState(0);
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu>();
-  const [duplicateVideoImport, setDuplicateVideoImport] = useState<DuplicateVideoImport>();
+  const [duplicateMediaImport, setDuplicateMediaImport] = useState<DuplicateMediaImport>();
   const [cropSession, setCropSession] = useState<CropSession>();
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportFilename, setExportFilename] = useState('frameyu-demo');
+  const [exportSaveMode, setExportSaveMode] = useState<ExportSaveMode>('download');
+  const renderedProjectRef = useRef(project);
+  const projectRevisionRef = useRef(0);
+  if (renderedProjectRef.current !== project) {
+    renderedProjectRef.current = project;
+    projectRevisionRef.current += 1;
+  }
   // URL-only Stage A validation switch; this is not persisted editor state.
   const sourceCropPrototypeEnabled = useMemo(() => new URLSearchParams(window.location.search).get('sourceCropPrototype') === '1', []);
 
@@ -194,6 +216,53 @@ export default function App() {
     try { sessionStorage.setItem(WAVEFORM_DISPLAY_STORAGE_KEY, JSON.stringify(waveformDisplaySettings)); } catch { /* Session storage is optional. */ }
   }, [waveformDisplaySettings]);
 
+  useEffect(() => () => {
+    if (materialDrawerCloseTimerRef.current !== undefined) window.clearTimeout(materialDrawerCloseTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const panel = assetPanelRef.current;
+    const anchor = materialDrawerRef.current;
+    if (!panel || !anchor) return;
+    const updateDrawerWidth = () => {
+      const panelRect = panel.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const drawerLeft = anchorRect.right + 6;
+      const availableWidth = Math.max(112, Math.floor(panelRect.right - drawerLeft - 8));
+      setMaterialDrawerWidth((current) => current === availableWidth ? current : availableWidth);
+    };
+    const observer = new ResizeObserver(updateDrawerWidth);
+    observer.observe(panel);
+    observer.observe(anchor);
+    updateDrawerWidth();
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (materialActionsRef.current?.contains(event.target as Node)) return;
+      setMaterialDrawerOpen(false);
+      setMaterialDrawerPinned(false);
+      setAudioUploadChoicesOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (materialLibraryType) {
+        setMaterialLibraryType(undefined);
+        return;
+      }
+      setMaterialDrawerOpen(false);
+      setMaterialDrawerPinned(false);
+      setAudioUploadChoicesOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [materialLibraryType]);
+
   useEffect(() => {
     const container = editorBodyRef.current;
     if (!container) return;
@@ -242,7 +311,7 @@ export default function App() {
       if (claim.kind === 'duplicate') {
         const existing = projectRef.current.assets.find((asset) => asset.id === claim.assetId);
         if (!existing) throw new Error('重复素材的既有引用已不可用，请重新导入。');
-        setDuplicateVideoImport({ assetId: existing.id, existingName: existing.name, importedName: file.name });
+        setDuplicateMediaImport({ assetId: existing.id, existingName: existing.name, importedName: file.name, kind: '视频' });
         setEditor((previous) => ({ ...previous, status: 'ready', message: `“${file.name}”与已有素材内容相同，未重复导入。` }));
         return;
       }
@@ -269,9 +338,10 @@ export default function App() {
     }
   }
 
-  function locateDuplicateVideo(assetId: string) {
-    setMaterialFilter('video');
-    setDuplicateVideoImport(undefined);
+  function locateDuplicateMedia(assetId: string) {
+    const asset = projectRef.current.assets.find((item) => item.id === assetId);
+    setMaterialFilter(asset?.type === 'video' ? 'video' : (asset?.audioKind ?? 'music'));
+    setDuplicateMediaImport(undefined);
     requestAnimationFrame(() => {
       const card = document.getElementById(`asset-card-${assetId}`);
       card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -281,18 +351,37 @@ export default function App() {
 
   async function importAudio(file: File, audioKind: AudioKind) {
     const fileSelectedAt = performance.now();
-    setEditor((previous) => ({ ...previous, status: 'loading', message: '正在解析音频…' }));
+    let reservation: { abort: () => void; commit: (assetId: string) => void } | undefined;
+    setEditor((previous) => ({ ...previous, status: 'loading', message: '正在后台计算音频内容指纹…' }));
     try {
+      console.info('[AudioUpload]', { phase: 'hash-start', name: file.name, size: file.size, audioKind });
+      const claim = await audioDedupRef.current.claim(file, projectRef.current.assets);
+      console.info('[AudioDedup]', { fileName: file.name, fileSize: file.size, candidateCount: claim.candidateCount, hashDurationMs: claim.hashDurationMs, outcome: claim.kind, requestedKind: audioKind });
+      if (claim.kind === 'duplicate') {
+        const existing = projectRef.current.assets.find((asset) => asset.id === claim.assetId);
+        if (!existing) throw new Error('重复素材的既有引用已不可用，请重新导入。');
+        setDuplicateMediaImport({ assetId: existing.id, existingName: existing.name, importedName: file.name, kind: existing.audioKind === 'sfx' ? '音效' : '音乐' });
+        console.info('[AudioUpload]', { phase: 'duplicate-found', name: file.name, assetId: existing.id, audioKind });
+        setEditor((previous) => ({ ...previous, status: 'ready', message: `“${file.name}”与已有${existing.audioKind === 'sfx' ? '音效' : '音乐'}内容相同，未重复导入。` }));
+        return;
+      }
+      reservation = claim;
+      setEditor((previous) => ({ ...previous, status: 'loading', message: '音频指纹完成，正在解析媒体…' }));
       const info = await adapterRef.current!.inspectFile(file, 'audio');
-      const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, ...info };
+      const asset: Asset = { id: makeId('audio'), name: file.name, type: 'audio', audioKind, mimeType: file.type, fileSize: claim.fingerprint.fileSize, contentHash: claim.fingerprint.contentHash, ...info };
       adapterRef.current!.registerAsset(asset, file);
       assetFilesRef.current.set(asset.id, file);
       setRuntimeAssetVersion((version) => version + 1);
       audioPreviewUrlsRef.current.set(asset.id, URL.createObjectURL(file));
       timelinePreviewCacheRef.current.noteAudioImported(asset, fileSelectedAt);
       setProject((previous) => ({ ...previous, assets: [...previous.assets, asset] }));
+      reservation.commit(asset.id);
+      reservation = undefined;
+      console.info('[AudioUpload]', { phase: 'import-complete', name: file.name, assetId: asset.id, audioKind });
       setEditor((previous) => ({ ...previous, status: 'ready', message: `已导入${audioKind === 'music' ? '音乐' : '音效'} ${file.name}` }));
     } catch (error) {
+      reservation?.abort();
+      console.warn('[AudioUpload]', { phase: 'import-failed', name: file.name, audioKind, error: error instanceof Error ? error.message : String(error) });
       console.error('[WebAV] audio import failed', error);
       setEditor((previous) => ({ ...previous, status: 'error', message: `音频无法解码：${error instanceof Error ? error.message : String(error)}` }));
     }
@@ -341,18 +430,59 @@ export default function App() {
     setEditor((previous) => ({ ...previous, playheadMs: start, playback: 'playing' }));
   }
 
+  function requestExport() {
+    if (cropSessionRef.current) {
+      setEditor((previous) => ({ ...previous, status: 'ready', message: '请先确认或取消当前裁切，再导出视频。' }));
+      return;
+    }
+    setExportDialogOpen(true);
+  }
+
   async function exportVideo() {
-    if (!projectDuration || editor.status === 'exporting') return;
+    if (cropSessionRef.current) {
+      setExportDialogOpen(false);
+      setEditor((previous) => ({ ...previous, status: 'ready', message: '请先确认或取消当前裁切，再导出视频。' }));
+      return;
+    }
+    const exportProject = projectRef.current;
+    const exportDuration = getProjectDuration(exportProject);
+    if (!exportDuration || editor.status === 'exporting') return;
+    const filename = normaliseMp4Filename(exportFilename);
+    type SaveHandle = { createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> };
+    let saveHandle: SaveHandle | undefined;
+    if (exportSaveMode === 'picker' && 'showSaveFilePicker' in window) {
+      try {
+        saveHandle = await (window as unknown as { showSaveFilePicker: (options: unknown) => Promise<SaveHandle> }).showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: 'MP4 视频', accept: { 'video/mp4': ['.mp4'] } }],
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setExportDialogOpen(false);
+          setEditor((previous) => ({ ...previous, status: 'ready', message: '已取消选择保存位置，未开始导出。' }));
+          return;
+        }
+        setEditor((previous) => ({ ...previous, status: 'error', message: `无法选择保存位置：${error instanceof Error ? error.message : String(error)}` }));
+        return;
+      }
+    }
+    setExportDialogOpen(false);
     setEditor((previous) => ({ ...previous, status: 'exporting', message: '正在用 WebAV 合成 MP4…' }));
     try {
-      const blob = await adapterRef.current!.export(project, (progress) => setEditor((previous) => ({ ...previous, message: `正在导出 ${(progress * 100).toFixed(0)}%` })));
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = 'frameyu-demo.mp4';
-      anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setEditor((previous) => ({ ...previous, status: 'ready', message: `导出成功（${(blob.size / 1024 / 1024).toFixed(1)} MB）` }));
+      const blob = await adapterRef.current!.export(exportProject, (progress) => setEditor((previous) => ({ ...previous, message: `正在导出 ${(progress * 100).toFixed(0)}%` })));
+      if (saveHandle) {
+        const writable = await saveHandle.createWritable();
+        try { await writable.write(blob); await writable.close(); }
+        catch (error) { throw new Error(`写入文件失败：${error instanceof Error ? error.message : String(error)}`); }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      setEditor((previous) => ({ ...previous, status: 'ready', message: `导出成功：${filename}（${(blob.size / 1024 / 1024).toFixed(1)} MB）` }));
     } catch (error) {
       console.error('[WebAV] export failed', error);
       setEditor((previous) => ({ ...previous, status: 'error', message: `导出失败：${error instanceof Error ? error.message : String(error)}` }));
@@ -396,14 +526,67 @@ export default function App() {
   }
 
   function openLocalAudioLibrary(filter: Extract<MaterialFilter, 'music' | 'sfx'>) {
+    console.info('[AudioUpload]', { phase: 'kind-selected', audioKind: filter });
     setMaterialFilter(filter);
     setEditor((previous) => ({ ...previous, status: 'ready', message: `请选择本地${filter === 'music' ? '音乐' : '音效'}文件导入` }));
+    const input = filter === 'music' ? musicInputRef.current : sfxInputRef.current;
+    // This must remain in the originating click handler. Deferring it to rAF breaks
+    // browser user-activation requirements and makes the system picker appear inert.
+    console.info('[AudioUpload]', { phase: 'file-picker-open', audioKind: filter, inputReady: Boolean(input) });
+    input?.click();
     requestAnimationFrame(() => materialListRef.current?.scrollTo({ top: 0, behavior: 'smooth' }));
-    (filter === 'music' ? musicInputRef : sfxInputRef).current?.click();
   }
 
-  function showGenerationUnavailable(kind: 'music' | 'sfx') {
-    setEditor((previous) => ({ ...previous, status: 'ready', message: `${kind === 'music' ? '音乐' : '音效'}生成功能待接入；可使用对应素材库导入本地文件。` }));
+  function onAudioInputChange(event: React.ChangeEvent<HTMLInputElement>, audioKind: AudioKind) {
+    const file = event.target.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) {
+      console.info('[AudioUpload]', { phase: 'file-picker-cancelled', audioKind });
+      return;
+    }
+    console.info('[AudioUpload]', { phase: 'files-selected', name: file.name, size: file.size, audioKind });
+    void importAudio(file, audioKind);
+  }
+
+  function openMaterialLibrary(type: MaterialLibraryType) {
+    if (materialDrawerCloseTimerRef.current !== undefined) window.clearTimeout(materialDrawerCloseTimerRef.current);
+    setMaterialDrawerOpen(false);
+    setMaterialDrawerPinned(false);
+    setMaterialLibraryType(type);
+  }
+
+  function scheduleMaterialDrawerClose() {
+    if (materialDrawerPinned) return;
+    if (materialDrawerCloseTimerRef.current !== undefined) window.clearTimeout(materialDrawerCloseTimerRef.current);
+    materialDrawerCloseTimerRef.current = window.setTimeout(() => setMaterialDrawerOpen(false), 180);
+  }
+
+  function openMaterialDrawer() {
+    if (materialDrawerCloseTimerRef.current !== undefined) window.clearTimeout(materialDrawerCloseTimerRef.current);
+    setMaterialDrawerOpen(true);
+  }
+
+  function toggleMaterialDrawerPin() {
+    if (materialDrawerCloseTimerRef.current !== undefined) window.clearTimeout(materialDrawerCloseTimerRef.current);
+    if (materialDrawerPinned) {
+      setMaterialDrawerPinned(false);
+      setMaterialDrawerOpen(false);
+      return;
+    }
+    // Hover may have already opened the drawer before the click arrives. The first
+    // click must pin that existing drawer open rather than toggling it closed.
+    setMaterialDrawerPinned(true);
+    setMaterialDrawerOpen(true);
+  }
+
+  function uploadFromMaterialLibrary(type: MaterialLibraryType) {
+    setMaterialLibraryType(undefined);
+    if (type === 'video') {
+      setMaterialFilter('video');
+      videoInputRef.current?.click();
+      return;
+    }
+    openLocalAudioLibrary(type);
   }
 
   function createTrack(type: TrackType) {
@@ -546,6 +729,7 @@ export default function App() {
     const next: CropSession = { clipId: selected.id, initial: current, draft: current, aspectPreset: 'free' };
     cropSessionRef.current = next;
     setCropSession(next);
+    console.info('[SourceCropInteraction]', { phase: 'started', clipId: selected.id, initial: current, draft: current, projectRevision: projectRevisionRef.current });
     adapterRef.current?.pause();
     // Editing always starts from the complete original source, so reopening a
     // crop edits its persisted rectangle rather than destructively recropping it.
@@ -557,15 +741,30 @@ export default function App() {
     if (session) void adapterRef.current?.setPreviewSourceCropOverride(session.clipId, undefined, editor.playheadMs).catch((error: unknown) => console.error('[SourceCrop] failed to restore crop', error));
     cropSessionRef.current = undefined;
     setCropSession(undefined);
+    if (session) console.info('[SourceCropInteraction]', { phase: 'cancelled', clipId: session.clipId, initial: session.initial, discardedDraft: session.draft, projectRevision: projectRevisionRef.current, exited: true });
   }
 
   function confirmCropMode() {
     const session = cropSessionRef.current;
     if (!session) return;
-    void adapterRef.current?.setPreviewSourceCropOverride(session.clipId, undefined, editor.playheadMs).catch((error: unknown) => console.error('[SourceCrop] failed to apply crop', error));
-    setProject((previous) => updateSourceCrop(previous, session.clipId, session.draft));
+    const currentProject = projectRef.current;
+    const before = currentProject.clips.find((clip) => clip.id === session.clipId)?.sourceCrop ?? FULL_SOURCE_CROP;
+    const committedProject = updateSourceCrop(currentProject, session.clipId, session.draft);
+    const after = committedProject.clips.find((clip) => clip.id === session.clipId)?.sourceCrop ?? FULL_SOURCE_CROP;
+    const previousRevision = projectRevisionRef.current;
+    projectRevisionRef.current += 1;
+    renderedProjectRef.current = committedProject;
+    projectRef.current = committedProject;
+    setProject(committedProject);
     cropSessionRef.current = undefined;
     setCropSession(undefined);
+    console.info('[SourceCropInteraction]', { phase: 'confirmed', clipId: session.clipId, initial: session.initial, draft: session.draft, before, after, projectRevisionBefore: previousRevision, projectRevisionAfter: projectRevisionRef.current, exited: true });
+    void adapterRef.current?.setPreviewSourceCropOverride(session.clipId, undefined, editor.playheadMs, committedProject).then(() => {
+      console.info('[SourceCropInteraction]', { phase: 'confirmed-preview-synchronized', clipId: session.clipId, sourceCrop: after, projectRevision: projectRevisionRef.current });
+    }).catch((error: unknown) => {
+      console.error('[SourceCrop] failed to apply crop', error);
+      setEditor((previous) => ({ ...previous, status: 'error', message: `裁切已保存，但预览同步失败：${error instanceof Error ? error.message : String(error)}` }));
+    });
   }
 
   function resetCropDraft() {
@@ -759,25 +958,35 @@ export default function App() {
     <header className="topbar">
       <div><strong>帧语智能编辑器</strong><span className="tag">WebAV Demo</span></div>
       <div className={`status ${editor.status}`}>{editor.status === 'loading' ? '加载中' : editor.status === 'exporting' ? '导出中' : editor.status === 'error' ? '异常' : '就绪'} · {editor.message}</div>
-      <button className="primary" disabled={!projectDuration || editor.status === 'exporting'} onClick={exportVideo}>导出 MP4</button>
+      <button className="primary" disabled={!projectDuration || editor.status === 'exporting'} onClick={requestExport}>导出视频</button>
     </header>
     {!capability?.supported && <div className="capability-warning"><b>兼容性提示：</b>{capability ? capability.reasons.join(' ') : '正在检测 WebCodecs 与 WebAV…'}</div>}
     <div className="editor-body" ref={editorBodyRef}>
       <section className="workspace" style={workspaceStyle}>
-        <aside className="asset-panel panel">
-          <div className="material-actions">
-            <div className="material-heading"><h2>素材库</h2><span>本地会话</span></div>
-            <button className="material-entry material-primary-entry video-entry" onClick={() => videoInputRef.current?.click()}><i>▣</i><span>导入视频</span><small>本地 MP4</small></button>
-            <div className="material-quick-grid">
-              <button className="material-quick-entry music-entry" onClick={() => openLocalAudioLibrary('music')}>音乐素材库</button>
-              <button className="material-quick-entry music-entry" onClick={() => showGenerationUnavailable('music')}>生成音乐</button>
-              <button className="material-quick-entry sfx-entry" onClick={() => openLocalAudioLibrary('sfx')}>音效素材库</button>
-              <button className="material-quick-entry sfx-entry" onClick={() => showGenerationUnavailable('sfx')}>生成音效</button>
+        <aside className="asset-panel panel" ref={assetPanelRef}>
+          <div className="material-actions" ref={materialActionsRef}>
+            <div className="material-action-header">
+              <div className="material-library-anchor" ref={materialDrawerRef} onPointerEnter={openMaterialDrawer} onPointerLeave={scheduleMaterialDrawerClose}>
+                <button className={`material-library-flag ${materialDrawerOpen ? 'open' : ''}`} aria-label="素材库" aria-expanded={materialDrawerOpen} onClick={toggleMaterialDrawerPin}><span>素</span><span>材</span><span>库</span></button>
+                {materialDrawerOpen && <div className="material-library-drawer" role="menu" aria-label="个人素材库分类" style={{ width: `${materialDrawerWidth}px` }} onPointerDown={(event) => event.stopPropagation()}>
+                  <p>个人素材库</p>
+                  <button role="menuitem" onClick={() => openMaterialLibrary('video')}><i>▣</i><span>视频素材库</span></button>
+                  <button role="menuitem" onClick={() => openMaterialLibrary('music')}><i>♫</i><span>音乐素材库</span></button>
+                  <button role="menuitem" onClick={() => openMaterialLibrary('sfx')}><i>✦</i><span>音效素材库</span></button>
+                </div>}
+              </div>
+              <div className="material-direct-actions">
+                <button className="material-direct-action video-entry" onClick={() => videoInputRef.current?.click()}><i>▣</i>上传视频</button>
+                <div className="audio-upload-anchor">
+                  <button className="material-direct-action audio-entry" aria-expanded={audioUploadChoicesOpen} onClick={() => setAudioUploadChoicesOpen((open) => !open)}><i>♫</i>上传音乐/音效</button>
+                  {audioUploadChoicesOpen && <div className="audio-upload-choices" role="menu"><button role="menuitem" onClick={() => { setAudioUploadChoicesOpen(false); openLocalAudioLibrary('music'); }}>上传音乐</button><button role="menuitem" onClick={() => { setAudioUploadChoicesOpen(false); openLocalAudioLibrary('sfx'); }}>上传音效</button></div>}
+                </div>
+                <button className="material-direct-action caption-entry" onClick={() => setCaptionComposerOpen((open) => !open)}><i>T</i>添加字幕</button>
+              </div>
             </div>
-            <button className="material-entry material-caption-entry caption-entry" onClick={() => setCaptionComposerOpen((open) => !open)}><i>T</i><span>添加字幕</span><small>手动创建</small></button>
             <input ref={videoInputRef} aria-label="导入视频" className="visually-hidden" type="file" accept="video/mp4" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importVideo(file); }} />
-            <input ref={musicInputRef} aria-label="导入音乐" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importAudio(file, 'music'); }} />
-            <input ref={sfxInputRef} aria-label="导入音效" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) void importAudio(file, 'sfx'); }} />
+            <input ref={musicInputRef} aria-label="导入音乐" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => onAudioInputChange(event, 'music')} />
+            <input ref={sfxInputRef} aria-label="导入音效" className="visually-hidden" type="file" accept="audio/mpeg,audio/wav" onChange={(event) => onAudioInputChange(event, 'sfx')} />
             {captionComposerOpen && <div className="caption-composer"><label>字幕文字<textarea aria-label="新字幕文字" value={captionDraft.text} onChange={(event) => setCaptionDraft((previous) => ({ ...previous, text: event.target.value }))} placeholder="输入字幕文本" /></label><div><label>开始 <input aria-label="字幕开始时间" type="number" min="0" max={projectDuration} value={captionDraft.startMs} onChange={(event) => setCaptionDraft((previous) => ({ ...previous, startMs: Number(event.target.value) }))} /></label><label>结束 <input aria-label="字幕结束时间" type="number" min="0" max={projectDuration} value={captionDraft.endMs} onChange={(event) => setCaptionDraft((previous) => ({ ...previous, endMs: Number(event.target.value) }))} /></label></div><button className="caption-add" disabled={!projectDuration} onClick={addCaptionToSelectedTrack}>创建字幕</button></div>}
             <div className="material-filters" role="tablist" aria-label="素材筛选">{([['all', '全部'], ['video', '视频'], ['music', '音乐'], ['sfx', '音效'], ['caption', '字幕']] as const).map(([filter, label]) => <button key={filter} role="tab" aria-selected={materialFilter === filter} className={materialFilter === filter ? 'active' : ''} onClick={() => setMaterialFilter(filter)}>{label}</button>)}</div>
           </div>
@@ -805,7 +1014,9 @@ export default function App() {
         </div>
       </section>
       {clipContextMenu && <div className="clip-context-menu" role="menu" aria-label="片段操作菜单" style={{ left: `${clipContextMenu.x}px`, top: `${clipContextMenu.y}px` }} onPointerDown={(event) => event.stopPropagation()}><button role="menuitem" disabled={!canSplitTimelineClip(project, clipContextMenu.clipId, editor.playheadMs)} onClick={() => splitClipAtPlayhead(clipContextMenu.clipId)}>在播放头处分割</button></div>}
-      {duplicateVideoImport && <DuplicateVideoDialog duplicate={duplicateVideoImport} onLocate={() => locateDuplicateVideo(duplicateVideoImport.assetId)} onClose={() => setDuplicateVideoImport(undefined)} />}
+      {duplicateMediaImport && <DuplicateMediaDialog duplicate={duplicateMediaImport} onLocate={() => locateDuplicateMedia(duplicateMediaImport.assetId)} onClose={() => setDuplicateMediaImport(undefined)} />}
+      {materialLibraryType && <MaterialLibraryDialog type={materialLibraryType} onUpload={() => uploadFromMaterialLibrary(materialLibraryType)} onClose={() => setMaterialLibraryType(undefined)} />}
+      {exportDialogOpen && <ExportDialog filename={exportFilename} saveMode={exportSaveMode} supportsSavePicker={'showSaveFilePicker' in window} onFilenameChange={setExportFilename} onSaveModeChange={setExportSaveMode} onConfirm={() => void exportVideo()} onClose={() => setExportDialogOpen(false)} />}
     </div>
   </main>;
 }
@@ -824,12 +1035,36 @@ function MaterialAssetCard({ asset, previewUrl, projectDuration, analysisStatus,
   </article>;
 }
 
-function DuplicateVideoDialog({ duplicate, onLocate, onClose }: { duplicate: DuplicateVideoImport; onLocate: () => void; onClose: () => void }) {
+function DuplicateMediaDialog({ duplicate, onLocate, onClose }: { duplicate: DuplicateMediaImport; onLocate: () => void; onClose: () => void }) {
   return <div className="duplicate-video-backdrop" role="presentation" onPointerDown={onClose}>
     <section className="duplicate-video-dialog" role="dialog" aria-modal="true" aria-labelledby="duplicate-video-title" onPointerDown={(event) => event.stopPropagation()}>
       <h2 id="duplicate-video-title">检测到重复素材</h2>
-      <p>当前文件“{duplicate.importedName}”与素材库中的“{duplicate.existingName}”内容相同，无需再次导入。</p>
+      <p>当前{duplicate.kind}文件“{duplicate.importedName}”与素材库中的“{duplicate.existingName}”内容相同，无需再次导入。</p>
       <div><button className="primary" onClick={onLocate}>定位已有素材</button><button className="secondary" onClick={onClose}>关闭</button></div>
+    </section>
+  </div>;
+}
+
+function MaterialLibraryDialog({ type, onUpload, onClose }: { type: MaterialLibraryType; onUpload: () => void; onClose: () => void }) {
+  const labels = { video: '视频', music: '音乐', sfx: '音效' } as const;
+  const label = labels[type];
+  return <div className="material-library-backdrop" role="presentation" onPointerDown={onClose}>
+    <section className="material-library-dialog" role="dialog" aria-modal="true" aria-labelledby="material-library-title" onPointerDown={(event) => event.stopPropagation()}>
+      <header><div><p>素材库</p><h2 id="material-library-title">{label}素材库</h2></div><button className="dialog-close" aria-label="关闭素材库" onClick={onClose}>×</button></header>
+      <div className="material-library-columns">
+        <section className="cloud-material-placeholder"><h3>个人云端素材库</h3><div><b>个人云端素材库尚未接入</b><p>后续接入账号素材库后，可在这里选择已保存的素材。</p></div></section>
+        <section className="local-material-upload"><h3>本地上传</h3><p>从本机选择{label}文件，导入后会进入当前工程素材列表。</p><button className="primary" onClick={onUpload}>选择本地{label}</button><label className="cloud-save-option"><input type="checkbox" disabled />同时保存至个人素材库 <small>待接入</small></label></section>
+      </div>
+    </section>
+  </div>;
+}
+
+function ExportDialog({ filename, saveMode, supportsSavePicker, onFilenameChange, onSaveModeChange, onConfirm, onClose }: { filename: string; saveMode: ExportSaveMode; supportsSavePicker: boolean; onFilenameChange: (value: string) => void; onSaveModeChange: (value: ExportSaveMode) => void; onConfirm: () => void; onClose: () => void }) {
+  return <div className="export-backdrop" role="presentation" onPointerDown={onClose}>
+    <section className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-dialog-title" onPointerDown={(event) => event.stopPropagation()}>
+      <header><div><p>导出设置</p><h2 id="export-dialog-title">导出视频</h2></div><button className="dialog-close" aria-label="关闭导出设置" onClick={onClose}>×</button></header>
+      <div className="export-fields"><label>文件名称<input aria-label="导出文件名称" value={filename} onChange={(event) => onFilenameChange(event.target.value)} /><small>将保存为 {normaliseMp4Filename(filename)}</small></label><label>文件格式<select aria-label="导出文件格式" value="mp4" disabled><option value="mp4">MP4（H.264 / AAC）</option></select><small>当前 WebAV 合成链路只可靠支持 MP4。</small></label><fieldset><legend>保存方式</legend><label><input type="radio" name="export-save-mode" checked={saveMode === 'download'} onChange={() => onSaveModeChange('download')} />浏览器下载</label><label><input type="radio" name="export-save-mode" checked={saveMode === 'picker'} disabled={!supportsSavePicker} onChange={() => onSaveModeChange('picker')} />选择系统保存位置 {!supportsSavePicker && <small>（当前浏览器不支持）</small>}</label></fieldset></div>
+      <footer><button className="secondary" onClick={onClose}>取消</button><button className="primary" onClick={onConfirm}>开始导出</button></footer>
     </section>
   </div>;
 }
@@ -866,33 +1101,38 @@ function TimelineClipPreview({ clip, asset, cache, displaySettings }: { clip: Ti
     return <WaveformCanvas className="audio-waveform" data={waveform} summary={cache.getWaveformSummary(clip.assetId)} displaySettings={displaySettings} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color={color} />;
   }
   if (clip.type === 'video' && asset) {
-    const waveform = cache.getVideoWaveform(clip.assetId);
-    const status = cache.getWaveformStatus(clip.assetId, 'video');
-    const sourceDurationMs = getClipSourceDurationMs(clip);
-    if (waveform) return <WaveformCanvas className="video-audio-waveform" data={waveform} summary={cache.getVideoWaveformSummary(clip.assetId)} displaySettings={displaySettings} sourceStartMs={clip.sourceStartMs} sourceDurationMs={sourceDurationMs} color="#86bce5" compact />;
-    const label = status?.phase === 'no-audio' ? '无音轨' : status?.phase === 'failed' ? '原声波形不可用' : status?.phase === 'sampling' ? '正在生成原声波形…' : status?.phase === 'decoding' ? '正在解码原声…' : '等待原声波形…';
-    return <div className={`video-waveform-placeholder ${status?.phase === 'no-audio' ? 'no-audio' : ''}`} aria-label={label}>{label}</div>;
+    const thumbnails = cache.getThumbnails(clip.assetId);
+    if (thumbnails) return <VideoThumbnailStrip clip={clip} frames={sampleThumbnailsForClip(thumbnails, clip, Math.max(1, Math.ceil(clip.durationMs / 1000)))} />;
+    return <div className="video-thumbnail-placeholder" aria-label="正在生成视频缩略帧">正在生成缩略帧…</div>;
   }
   return null;
+}
+
+function VideoThumbnailStrip({ clip, frames }: { clip: TimelineClip; frames: VideoThumbnail[] }) {
+  const crop = getSourceCrop(clip);
+  if (!frames.length) return <div className="video-thumbnail-placeholder" aria-label="视频缩略帧不可用">缩略帧不可用</div>;
+  return <div className="video-thumbnail-strip" aria-hidden="true">{frames.map((frame, index) => <span className="video-thumbnail-frame" key={`${frame.timeMs}-${index}`}><img src={frame.url} style={{ width: `${100 / crop.w}%`, height: `${100 / crop.h}%`, left: `${-crop.x / crop.w * 100}%`, top: `${-crop.y / crop.h * 100}%` }} /></span>)}</div>;
 }
 
 function SourceCropEditor({ layout, crop, aspectPreset, onPointerDown, onChangePreset, onConfirm, onCancel, onReset }: { layout: VideoLayout; crop: SourceCrop; aspectPreset: CropAspectPreset; onPointerDown: (event: React.PointerEvent, mode: 'move' | VideoResizeHandle) => void; onChangePreset: (preset: CropAspectPreset) => void; onConfirm: () => void; onCancel: () => void; onReset: () => void }) {
   const cropStyle: CSSProperties = { left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.w * 100}%`, height: `${crop.h * 100}%` };
   const outerStyle: CSSProperties = { left: `${layout.x / 1280 * 100}%`, top: `${layout.y / 720 * 100}%`, width: `${layout.width / 1280 * 100}%`, height: `${layout.height / 720 * 100}%` };
-  return <div className="source-crop-editor" aria-label="视频源画面裁切编辑器" style={outerStyle}>
-    <div className="source-crop-mask top" style={{ height: `${crop.y * 100}%` }} />
-    <div className="source-crop-mask left" style={{ top: `${crop.y * 100}%`, height: `${crop.h * 100}%`, width: `${crop.x * 100}%` }} />
-    <div className="source-crop-mask right" style={{ top: `${crop.y * 100}%`, height: `${crop.h * 100}%`, left: `${(crop.x + crop.w) * 100}%` }} />
-    <div className="source-crop-mask bottom" style={{ top: `${(crop.y + crop.h) * 100}%` }} />
-    <div className="source-crop-box" style={cropStyle} onPointerDown={(event) => onPointerDown(event, 'move')}>
-      <span className="source-crop-label">裁切区域</span>
-      {VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={`裁切${label}`} className={`source-crop-handle ${handle}`} onPointerDown={(event) => onPointerDown(event, handle)} />)}
+  return <>
+    <div className="source-crop-editor" aria-label="视频源画面裁切编辑器" style={outerStyle}>
+      <div className="source-crop-mask top" style={{ height: `${crop.y * 100}%` }} />
+      <div className="source-crop-mask left" style={{ top: `${crop.y * 100}%`, height: `${crop.h * 100}%`, width: `${crop.x * 100}%` }} />
+      <div className="source-crop-mask right" style={{ top: `${crop.y * 100}%`, height: `${crop.h * 100}%`, left: `${(crop.x + crop.w) * 100}%` }} />
+      <div className="source-crop-mask bottom" style={{ top: `${(crop.y + crop.h) * 100}%` }} />
+      <div className="source-crop-box" style={cropStyle} onPointerDown={(event) => onPointerDown(event, 'move')}>
+        <span className="source-crop-label">裁切区域</span>
+        {VIDEO_RESIZE_HANDLES.map(({ handle, label }) => <button type="button" key={handle} aria-label={`裁切${label}`} className={`source-crop-handle ${handle}`} onPointerDown={(event) => onPointerDown(event, handle)} />)}
+      </div>
     </div>
-    <div className="source-crop-toolbar" onPointerDown={(event) => event.stopPropagation()}>
+    <div className="source-crop-toolbar" role="toolbar" aria-label="裁切操作" onPointerDown={(event) => event.stopPropagation()}>
       <label>比例 <select aria-label="裁切比例" value={aspectPreset} onChange={(event) => onChangePreset(event.target.value as CropAspectPreset)}><option value="free">自由</option><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:3">4:3</option></select></label>
-      <button type="button" onClick={onReset}>重置裁切</button><button type="button" onClick={onCancel}>取消</button><button type="button" className="primary" onClick={onConfirm}>确认</button>
+      <button type="button" onClick={onReset}>重置裁切</button><button type="button" onClick={onCancel}>取消裁切</button><button type="button" className="primary" onClick={onConfirm}>确认裁切</button>
     </div>
-  </div>;
+  </>;
 }
 
 function Properties({ clip, asset, project, projectDuration, onUpdate, onTrim, onSetPlaybackRate, onUpdateVideoLayout, onSetVideoLayoutMode, onStartCrop, cropEditing, onDelete }: { clip: TimelineClip; asset?: Asset; project: Project; projectDuration: number; onUpdate: (patch: Partial<TimelineClip>) => void; onTrim: (valueMs: number, edge: 'left' | 'right') => void; onSetPlaybackRate: (playbackRate: number) => void; onUpdateVideoLayout: (patch: Partial<VideoLayout>) => void; onSetVideoLayoutMode: (mode: 'full' | 'fit' | 'fill' | 'pip') => void; onStartCrop: () => void; cropEditing: boolean; onDelete: () => void }) {

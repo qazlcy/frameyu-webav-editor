@@ -59,27 +59,37 @@ test('resizes the workspace and keeps a vertically scrollable dynamic track list
   expect(alignment.labelTop).toBe(alignment.laneTop);
 });
 
-test('keeps six material actions and filters fixed above the independently scrolling material list', async ({ page }) => {
+test('keeps the material drawer and direct import actions above the independently scrolling material list', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   const panel = page.locator('.asset-panel');
   const actions = page.locator('.material-actions');
   const list = page.locator('.material-list');
   await expect(panel).toBeVisible();
-  await expect(page.getByRole('button', { name: '导入视频' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '音乐素材库' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '生成音乐' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '音效素材库' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '生成音效' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '素材库' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '上传视频' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '上传音乐/音效' })).toBeVisible();
   await expect(page.getByRole('button', { name: '添加字幕' })).toBeVisible();
   expect(await actions.evaluate((node) => getComputedStyle(node).flexShrink)).toBe('0');
   expect(await list.evaluate((node) => getComputedStyle(node).overflowY)).toBe('auto');
 
+  await page.getByRole('button', { name: '素材库' }).click();
+  const drawer = page.getByRole('menu', { name: '个人素材库分类' });
+  const defaultBounds = await Promise.all([panel.boundingBox(), drawer.boundingBox()]);
+  expect(defaultBounds[0]).not.toBeNull();
+  expect(defaultBounds[1]).not.toBeNull();
+  expect(defaultBounds[1]!.x + defaultBounds[1]!.width).toBeLessThanOrEqual(defaultBounds[0]!.x + defaultBounds[0]!.width - 7);
+  await expect(page.getByRole('menuitem', { name: /视频素材库/ })).toBeVisible();
+  await page.getByRole('menuitem', { name: /音乐素材库/ }).click();
+  await expect(page.getByRole('dialog', { name: /音乐素材库/ })).toBeVisible();
+  await expect(page.getByText('个人云端素材库尚未接入')).toBeVisible();
   const musicChooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: '音乐素材库' }).click();
+  await page.getByRole('button', { name: '选择本地音乐' }).click();
   expect(await (await musicChooser).element().getAttribute('accept')).toContain('audio/');
+
+  await page.getByRole('button', { name: '上传音乐/音效' }).click();
   const sfxChooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: '音效素材库' }).click();
+  await page.getByRole('menuitem', { name: '上传音效' }).click();
   expect(await (await sfxChooser).element().getAttribute('accept')).toContain('audio/');
 
   await page.getByRole('button', { name: '添加字幕' }).click();
@@ -95,6 +105,11 @@ test('keeps six material actions and filters fixed above the independently scrol
   await page.mouse.move(box!.x + 63, box!.y + 100);
   await page.mouse.up();
   expect(await panel.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(290);
+  await page.getByRole('button', { name: '素材库' }).click();
+  const resizedBounds = await Promise.all([panel.boundingBox(), drawer.boundingBox()]);
+  expect(resizedBounds[0]).not.toBeNull();
+  expect(resizedBounds[1]).not.toBeNull();
+  expect(resizedBounds[1]!.x + resizedBounds[1]!.width).toBeLessThanOrEqual(resizedBounds[0]!.x + resizedBounds[0]!.width - 7);
 });
 
 test('manages an additional empty video track without disturbing the existing timeline', async ({ page }) => {

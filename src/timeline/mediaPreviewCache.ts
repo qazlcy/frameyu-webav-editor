@@ -20,6 +20,18 @@ export interface VideoThumbnailData {
   frames: VideoThumbnail[];
 }
 
+/** Asset-level frame cache ceiling; short/ordinary clips retain one source frame per second. */
+export const MAX_CACHED_VIDEO_THUMBNAILS = 180;
+
+export function thumbnailFrameCount(durationMs: number) {
+  return Math.max(1, Math.min(MAX_CACHED_VIDEO_THUMBNAILS, Math.floor(Math.max(0, durationMs) / 1000) + 1));
+}
+
+export function thumbnailStepUs(durationUs: number) {
+  const count = thumbnailFrameCount(usToMs(durationUs));
+  return count <= 1 ? Math.max(1, durationUs) : Math.max(1, Math.round(durationUs / (count - 1)));
+}
+
 export type MediaPreviewTask = Promise<WaveformData | VideoThumbnailData | undefined>;
 
 const nextIdlePeriod = () => new Promise<void>((resolve) => {
@@ -136,7 +148,10 @@ export function sampleThumbnailsForClip(data: VideoThumbnailData, clip: Timeline
   const requested = Math.max(1, count);
   return Array.from({ length: requested }, (_, index) => {
     const sourceDurationMs = getClipSourceDurationMs(clip);
-    const timeMs = clip.sourceStartMs + (index + 0.5) / requested * sourceDurationMs;
+    // One visual frame represents the beginning of each timeline-second slot.
+    // `sourceDurationMs` is rate-aware, so 2× advances two source seconds per
+    // displayed timeline second and 0.5× advances half a source second.
+    const timeMs = clip.sourceStartMs + index / requested * sourceDurationMs;
     return data.frames.reduce((closest, frame) => Math.abs(frame.timeMs - timeMs) < Math.abs(closest.timeMs - timeMs) ? frame : closest, data.frames[0]);
   });
 }
@@ -458,7 +473,7 @@ export class TimelineMediaPreviewCache {
     const clip = new MP4Clip(file.stream());
     try {
       const meta = await clip.ready;
-      const stepUs = Math.max(msToUs(500), Math.round(meta.duration / 16));
+      const stepUs = thumbnailStepUs(meta.duration);
       const rendered = await clip.thumbnails(160, { start: 0, end: meta.duration, step: stepUs });
       const data: VideoThumbnailData = { durationMs: asset.durationMs, frames: rendered.map(({ ts, img }) => ({ timeMs: usToMs(ts), url: URL.createObjectURL(img) })) };
       if (this.disposed) {
@@ -513,7 +528,11 @@ export function scheduleMediaPreviewAnalysis(cache: TimelineMediaPreviewCache, a
       continue;
     }
     if (asset.type === 'audio') tasks.push(cache.ensureWaveform(asset, file));
-    else tasks.push(cache.ensureVideoWaveform(asset, file));
+    else {
+      // Source-audio analysis and image thumbnail extraction have independent caches:
+      // either may fail without making the timeline clip unusable.
+      tasks.push(cache.ensureVideoWaveform(asset, file), cache.ensureThumbnails(asset, file));
+    }
   }
   return tasks;
 }

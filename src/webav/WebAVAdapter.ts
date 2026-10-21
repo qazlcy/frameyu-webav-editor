@@ -32,6 +32,8 @@ interface RuntimeSprite {
   mediaSignature: string;
 }
 
+type RenderMode = 'preview' | 'export';
+
 const positionY = (position: CaptionPosition) => ({ top: 70, center: 330, bottom: 610 }[position]);
 
 export class WebAVAdapter {
@@ -44,7 +46,11 @@ export class WebAVAdapter {
   private latestSyncRequest = 0;
   private syncQueue: Promise<void> = Promise.resolve();
   private readonly sourceCropPrototype: boolean;
-  private previewSourceCropOverrides = new Map<string, import('../editor/types').SourceCrop>();
+  private renderMode: RenderMode = 'preview';
+  /** Only populated while opening/cancelling the crop editor. It never mutates Project. */
+  private previewCropOverrides = new Map<string, import('../editor/types').SourceCrop>();
+  private cropMetrics = { previewSpriteRebuilds: 0, exportSpriteRebuilds: 0, previewFrameTransforms: 0, exportFrameTransforms: 0, cropFrameTransformMs: 0 };
+  private nextCropRuntimeId = 1;
 
   constructor(options: WebAVAdapterOptions = {}) {
     this.sourceCropPrototype = options.sourceCropPrototype === true;
@@ -103,19 +109,20 @@ export class WebAVAdapter {
     console.log('[WebAV] asset registered', asset.name, asset.durationMs);
   }
 
-  sync(project: Project, previewMs = 0): Promise<void> {
+  sync(project: Project, previewMs = 0, renderMode: RenderMode = 'preview'): Promise<void> {
     const request = ++this.latestSyncRequest;
     const applyIfCurrent = async () => {
       if (request !== this.latestSyncRequest) return;
-      await this.applySync(project, previewMs);
+      await this.applySync(project, previewMs, renderMode);
     };
     this.syncQueue = this.syncQueue.then(applyIfCurrent, applyIfCurrent);
     return this.syncQueue;
   }
 
-  private async applySync(project: Project, previewMs: number) {
+  private async applySync(project: Project, previewMs: number, renderMode: RenderMode) {
     if (!this.canvas) throw new Error('预览画布尚未初始化');
     this.project = project;
+    this.renderMode = renderMode;
     this.canvas.pause();
     const expectedIds = new Set<string>();
     for (const clip of project.clips.filter((item) => item.type === 'video')) {
@@ -143,16 +150,21 @@ export class WebAVAdapter {
   pause() { this.canvas?.pause(); }
   async previewFrame(timeMs: number) { await this.canvas?.previewFrame(msToUs(Math.max(0, timeMs))); }
 
-  /** Crop edit mode uses this only to show the uncropped source before confirmation. */
-  async setPreviewSourceCropOverride(clipId: string, crop?: import('../editor/types').SourceCrop, previewMs = 0) {
-    if (crop) this.previewSourceCropOverrides.set(clipId, crop);
-    else this.previewSourceCropOverrides.delete(clipId);
-    if (this.project) await this.sync(this.project, previewMs);
+  async setPreviewSourceCropOverride(clipId: string, crop?: import('../editor/types').SourceCrop, previewMs = 0, project = this.project) {
+    if (crop) this.previewCropOverrides.set(clipId, crop);
+    else this.previewCropOverrides.delete(clipId);
+    if (!project) return;
+    // Called only when entering, cancelling, or confirming crop mode — never
+    // from pointermove — so just the affected video sprite is rebuilt.
+    await this.sync(project, previewMs, 'preview');
+    console.info('[SourceCrop]', { phase: 'preview-override-updated', clipId, crop, previewMs });
   }
 
   async export(project: Project, onProgress?: (progress: number) => void): Promise<Blob> {
     if (!this.canvas) throw new Error('预览画布尚未初始化');
-    await this.sync(project, 0);
+    // Export rebuilds cropped video sprites with a physical pixel-copy crop;
+    // preview uses the lighter VideoFrame.visibleRect path.
+    await this.sync(project, 0, 'export');
     const durationMs = getProjectDuration(project);
     if (!durationMs) throw new Error('请先向视频轨添加有效视频。');
     const combinator = await this.canvas.createCombinator({ width: project.width, height: project.height });
@@ -170,6 +182,9 @@ export class WebAVAdapter {
     } finally {
       unsubscribeProgress();
       combinator.destroy();
+      // Return to a decode-light editor graph even if encoding or file writing fails.
+      await this.sync(project, 0, 'preview');
+      console.info('[CropPerformance]', { phase: 'export-crop-metrics', ...this.cropMetrics });
     }
   }
 
@@ -184,21 +199,28 @@ export class WebAVAdapter {
   }
 
   private async syncVideoSprite(clip: TimelineClip, project: Project) {
-    const effectiveCrop = this.previewSourceCropOverrides.get(clip.id) ?? getSourceCrop(clip);
-    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted, sourceCrop: effectiveCrop, sourceCropPrototype: this.sourceCropPrototype });
+    const sourceCrop = this.renderMode === 'preview'
+      ? this.previewCropOverrides.get(clip.id) ?? getSourceCrop(clip)
+      : getSourceCrop(clip);
+    const mediaSignature = JSON.stringify({ assetId: clip.assetId, sourceStartMs: clip.sourceStartMs, sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs, playbackRate: clip.playbackRate, volume: clip.volume, muted: clip.muted, sourceCrop, renderMode: this.renderMode, sourceCropPrototype: this.sourceCropPrototype });
     const current = this.sprites.get(clip.id);
     if (current?.mediaSignature === mediaSignature) {
-      this.applyVideoSprite(current.sprite, clip, project, effectiveCrop);
+      this.applyVideoSprite(current.sprite, clip, project, sourceCrop);
       return;
     }
     this.removeSprite(clip.id);
-    const sprite = await this.createVideoSprite(clip, project, effectiveCrop);
+    if (this.renderMode === 'export') this.cropMetrics.exportSpriteRebuilds += 1;
+    else this.cropMetrics.previewSpriteRebuilds += 1;
+    const sprite = await this.createVideoSprite(clip, project, sourceCrop);
     await this.addSprite(clip.id, sprite, mediaSignature);
   }
 
-  private applyVideoSprite(sprite: VisibleSprite, clip: TimelineClip, project: Project, sourceCrop = this.previewSourceCropOverrides.get(clip.id) ?? getSourceCrop(clip)) {
+  private applyVideoSprite(sprite: VisibleSprite, clip: TimelineClip, project: Project, sourceCrop = getSourceCrop(clip)) {
     const asset = clip.assetId ? this.assets.get(clip.assetId)?.asset : undefined;
     const layout = clip.videoLayout ?? defaultVideoLayout(project, asset);
+    // The same source crop is used by preview and the temporary export graph.
+    // VideoFrame.visibleRect keeps the common preview path lightweight; a Canvas
+    // frame copy is only used when that WebCodecs operation is unsupported.
     const displayLayout = sourceCropDisplayLayout(layout, sourceCrop, asset);
     sprite.rect.x = displayLayout.x;
     sprite.rect.y = displayLayout.y;
@@ -212,7 +234,7 @@ export class WebAVAdapter {
     sprite.time = { offset: msToUs(clip.startMs), duration: msToUs(clip.durationMs), playbackRate: getClipPlaybackRate(clip) };
   }
 
-  private async createVideoSprite(clip: TimelineClip, project: Project, sourceCrop = this.previewSourceCropOverrides.get(clip.id) ?? getSourceCrop(clip)) {
+  private async createVideoSprite(clip: TimelineClip, project: Project, sourceCrop = getSourceCrop(clip)) {
     const runtime = clip.assetId ? this.assets.get(clip.assetId) : undefined;
     if (!runtime) throw new Error(`视频素材“${clip.name}”不存在，请重新导入。`);
     let media = new MP4Clip(runtime.file.stream(), { audio: { volume: clip.muted ? 0 : clip.volume } });
@@ -236,8 +258,16 @@ export class WebAVAdapter {
       installFixedSourceCropPrototype(media, CENTER_HALF_SOURCE_CROP);
       console.info('[SourceCropPrototype] installed fixed central 50% source crop', { clipId: clip.id, crop: CENTER_HALF_SOURCE_CROP });
     } else if (!isFullSourceCrop(sourceCrop)) {
-      installSourceCropFrameTransform(media, sourceCrop);
-      console.info('[SourceCrop] installed clip source crop', { clipId: clip.id, sourceCrop });
+      const renderMode = this.renderMode;
+      const runtimeId = `${clip.id}:${renderMode}:${this.nextCropRuntimeId++}`;
+      installSourceCropFrameTransform(media, sourceCrop, (trace) => {
+        if (renderMode === 'export') this.cropMetrics.exportFrameTransforms += 1;
+        else this.cropMetrics.previewFrameTransforms += 1;
+        this.cropMetrics.cropFrameTransformMs += trace.elapsedMs;
+        if (trace.invocation === 1) console.info('[SourceCrop] first transformed frame', { runtimeId, clipId: clip.id, renderMode, sourceCrop, ...trace });
+        if (trace.path === 'canvas' && trace.invocation === 1) console.warn('[SourceCrop] using Canvas fallback for decoded frames', { runtimeId, clipId: clip.id, renderMode });
+      }, { forceCanvas: renderMode === 'export' });
+      console.info('[SourceCrop] installed source crop', { runtimeId, clipId: clip.id, sourceCrop, renderMode });
     }
     const sprite = new VisibleSprite(media);
     this.applyVideoSprite(sprite, clip, project, sourceCrop);

@@ -16,22 +16,27 @@ export type VideoImportClaim =
  * Serializes the small critical section after hashing. Hashing itself may run in
  * parallel, but exactly one import owns a content hash until it commits or aborts.
  */
-export class VideoContentDeduplicator {
+/**
+ * Session-local SHA-256 de-duplication for one material family. Video and audio
+ * use separate instances so an unlikely cross-media byte match cannot hide a
+ * valid asset, while music and sound effects intentionally share one instance.
+ */
+export class MediaContentDeduplicator {
   private readonly hashByFile = new WeakMap<File, Promise<string>>();
   private readonly hashByAssetId = new Map<string, VideoFingerprint>();
   private readonly knownAssetByHash = new Map<string, string>();
   private readonly reservations = new Map<string, Promise<string | undefined>>();
 
-  constructor(private readonly hashFile: VideoHashFunction) {}
+  constructor(private readonly hashFile: VideoHashFunction, private readonly assetType: Asset['type'] = 'video') {}
 
   async claim(file: File, assets: readonly Asset[]): Promise<VideoImportClaim> {
     this.syncAssets(assets);
-    const candidateCount = assets.filter((asset) => asset.type === 'video' && asset.fileSize === file.size).length;
+    const candidateCount = assets.filter((asset) => asset.type === this.assetType && asset.fileSize === file.size).length;
     const startedAt = performance.now();
     const contentHash = await this.hash(file);
     const hashDurationMs = performance.now() - startedAt;
     const fingerprint = { fileSize: file.size, contentHash };
-    const duplicateAssetId = assets.find((asset) => asset.type === 'video' && asset.fileSize === file.size && asset.contentHash === contentHash)?.id
+    const duplicateAssetId = assets.find((asset) => asset.type === this.assetType && asset.fileSize === file.size && asset.contentHash === contentHash)?.id
       ?? this.knownAssetByHash.get(contentHash);
     if (duplicateAssetId) return { kind: 'duplicate', assetId: duplicateAssetId, fingerprint, candidateCount, hashDurationMs };
 
@@ -64,7 +69,7 @@ export class VideoContentDeduplicator {
 
   private syncAssets(assets: readonly Asset[]) {
     for (const asset of assets) {
-      if (asset.type !== 'video' || !asset.contentHash || asset.fileSize === undefined) continue;
+      if (asset.type !== this.assetType || !asset.contentHash || asset.fileSize === undefined) continue;
       const fingerprint = { fileSize: asset.fileSize, contentHash: asset.contentHash };
       this.hashByAssetId.set(asset.id, fingerprint);
       this.knownAssetByHash.set(fingerprint.contentHash, asset.id);
@@ -81,10 +86,15 @@ export class VideoContentDeduplicator {
   }
 }
 
+/** Backwards-compatible name retained for existing video callers and tests. */
+export class VideoContentDeduplicator extends MediaContentDeduplicator {
+  constructor(hashFile: VideoHashFunction) { super(hashFile, 'video'); }
+}
+
 const hexDigest = (buffer: ArrayBuffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, '0')).join('');
 
 /** Worker keeps complete-file SHA-256 buffer allocation and digest work off the UI thread. */
-export function hashVideoFile(file: File): Promise<string> {
+export function hashMediaFile(file: File): Promise<string> {
   if (typeof Worker !== 'undefined') {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('./videoHash.worker.ts', import.meta.url), { type: 'module' });
@@ -102,3 +112,6 @@ export function hashVideoFile(file: File): Promise<string> {
   // Chromium/Edge use the worker path above.
   return file.arrayBuffer().then((buffer) => crypto.subtle.digest('SHA-256', buffer)).then(hexDigest);
 }
+
+/** @deprecated Use hashMediaFile for new media import paths. */
+export const hashVideoFile = hashMediaFile;

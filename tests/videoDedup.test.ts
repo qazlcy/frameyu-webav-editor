@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { VideoContentDeduplicator } from '../src/editor/videoDedup';
+import { MediaContentDeduplicator, VideoContentDeduplicator } from '../src/editor/videoDedup';
 import type { Asset } from '../src/editor/types';
 
 const file = (name: string, size: number) => ({ name, size } as File);
 const video = (id: string, size: number, hash: string): Asset => ({ id, name: `${id}.mp4`, type: 'video', mimeType: 'video/mp4', durationMs: 1000, fileSize: size, contentHash: hash });
+const audio = (id: string, size: number, hash: string, audioKind: 'music' | 'sfx' = 'music'): Asset => ({ id, name: `${id}.mp3`, type: 'audio', audioKind, mimeType: 'audio/mpeg', durationMs: 1000, fileSize: size, contentHash: hash });
 
 describe('video content deduplication', () => {
   it('uses size as a candidate filter but confirms a same-size duplicate by SHA-256 content hash', async () => {
@@ -46,5 +47,23 @@ describe('video content deduplication', () => {
     const second = await dedup.claim(file('retry.mp4', 20), []);
     expect(second.kind).toBe('new');
     if (second.kind === 'new') second.abort();
+  });
+
+  it('deduplicates music and sound effects together without confusing them with videos', async () => {
+    const dedup = new MediaContentDeduplicator(async () => 'shared-audio', 'audio');
+    const assets = [video('same-bytes-video', 20, 'shared-audio'), audio('music', 20, 'shared-audio', 'music')];
+    await expect(dedup.claim(file('renamed.wav', 20), assets)).resolves.toMatchObject({ kind: 'duplicate', assetId: 'music', candidateCount: 1 });
+  });
+
+  it('serializes simultaneous same-content audio imports and releases a failed reservation', async () => {
+    const dedup = new MediaContentDeduplicator(async () => 'audio-retry', 'audio');
+    const first = await dedup.claim(file('first.mp3', 24), []);
+    if (first.kind !== 'new') throw new Error('expected reservation owner');
+    const secondPromise = dedup.claim(file('second.wav', 24), []);
+    first.abort();
+    const second = await secondPromise;
+    expect(second.kind).toBe('new');
+    if (second.kind === 'new') second.commit('audio-second');
+    await expect(dedup.claim(file('third.mp3', 24), [])).resolves.toMatchObject({ kind: 'duplicate', assetId: 'audio-second' });
   });
 });

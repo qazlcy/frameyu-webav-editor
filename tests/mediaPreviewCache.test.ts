@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const waveformMock = vi.hoisted(() => ({
   calls: 0, fail: false, pcm: [new Float32Array([0, 0.25, -0.5, 1])],
   videoCalls: 0, videoSplitCalls: 0, videoTickCalls: 0, videoDestroyCalls: 0, videoHasAudio: true, videoFail: false,
+  videoThumbnailCalls: 0,
   videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0.1])], [new Float32Array([0.9])]] as Float32Array[][],
 }));
 
@@ -40,11 +41,15 @@ vi.mock('@webav/av-cliper', () => ({
       if (waveformMock.videoFail) throw new Error('mock video audio decode failed');
       return { audio: waveformMock.videoChunks[this.tickIndex++] ?? [new Float32Array()], state: 'success' as const };
     }
+    async thumbnails() {
+      waveformMock.videoThumbnailCalls += 1;
+      return [{ ts: 0, img: new Blob(['thumbnail'], { type: 'image/webp' }) }];
+    }
     destroy() { waveformMock.videoDestroyCalls += 1; }
   },
 }));
 
-import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformEnvelope, sampleWaveformRange, scheduleMediaPreviewAnalysis, summariseWaveform, waveformBucketCount, waveformVisualAmplitude, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
+import { buildWaveformPeaks, sampleThumbnailsForClip, sampleWaveformEnvelope, sampleWaveformRange, scheduleMediaPreviewAnalysis, summariseWaveform, thumbnailFrameCount, thumbnailStepUs, waveformBucketCount, waveformVisualAmplitude, type VideoThumbnailData } from '../src/timeline/mediaPreviewCache';
 import { TimelineMediaPreviewCache } from '../src/timeline/mediaPreviewCache';
 import type { TimelineClip } from '../src/editor/types';
 import type { Asset } from '../src/editor/types';
@@ -200,16 +205,18 @@ describe('timeline media preview calculations', () => {
     cache.dispose();
   });
 
-  it('schedules only video source-audio analysis and no longer starts timeline thumbnail extraction', async () => {
+  it('schedules source-audio analysis and bounded thumbnail extraction independently for a video asset', async () => {
     const cache = new TimelineMediaPreviewCache();
     const asset: Asset = { id: 'video-waveform-only', name: 'voice.mp4', type: 'video', mimeType: 'video/mp4', durationMs: 200 };
     const file = new File(['video'], 'voice.mp4', { type: 'video/mp4' });
     Object.assign(waveformMock, { videoCalls: 0, videoSplitCalls: 0, videoTickCalls: 0, videoHasAudio: true, videoFail: false, videoDurationUs: 200_000, videoSampleRate: 10, videoChunks: [[new Float32Array([0.1])], [new Float32Array([0.8])]] });
     cache.noteWaveformAssetImported(asset, performance.now());
     const tasks = scheduleMediaPreviewAnalysis(cache, [asset], () => file);
-    expect(tasks).toHaveLength(1);
+    expect(tasks).toHaveLength(2);
     await expect(tasks[0]).resolves.toMatchObject({ peaks: [expect.closeTo(0.1), expect.closeTo(0.8)] });
-    expect(waveformMock.videoCalls).toBe(2); // source MP4Clip plus its split audio MP4Clip; no thumbnails() clip
+    await expect(tasks[1]).resolves.toMatchObject({ frames: [{ timeMs: 0 }] });
+    expect(waveformMock.videoCalls).toBe(3); // source, split audio track, and bounded thumbnail decoder
+    expect(waveformMock.videoThumbnailCalls).toBeGreaterThan(0);
     cache.dispose();
   });
 
@@ -288,7 +295,7 @@ describe('timeline media preview calculations', () => {
   it('uses cached source thumbnails nearest to a trimmed video interval', () => {
     const data: VideoThumbnailData = { durationMs: 6000, frames: [0, 2000, 4000, 6000].map((timeMs) => ({ timeMs, url: String(timeMs) })) };
     const frames = sampleThumbnailsForClip(data, { ...clip(1800, 2200), type: 'video', trackId: 'video' }, 2);
-    expect(frames.map((frame) => frame.timeMs)).toEqual([2000, 4000]);
+    expect(frames.map((frame) => frame.timeMs)).toEqual([2000, 2000]);
   });
 
   it('uses the speed-adjusted source window for a future non-1× clip', () => {
@@ -297,9 +304,21 @@ describe('timeline media preview calculations', () => {
     expect(frames.map((frame) => frame.timeMs)).toEqual([2000, 4000]);
   });
 
+  it('maps one timeline-second thumbnail slot through slow playback rate', () => {
+    const data: VideoThumbnailData = { durationMs: 4000, frames: Array.from({ length: 9 }, (_, index) => ({ timeMs: index * 500, url: String(index) })) };
+    const frames = sampleThumbnailsForClip(data, { ...clip(0, 4000), type: 'video', trackId: 'video', playbackRate: 0.5, sourceDurationMs: 2000 }, 4);
+    expect(frames.map((frame) => frame.timeMs)).toEqual([0, 500, 1000, 1500]);
+  });
+
   it('prefers an explicit source duration after a rate-aware split or trim', () => {
     const data: VideoThumbnailData = { durationMs: 10_000, frames: [0, 2000, 4000, 6000, 8000].map((timeMs) => ({ timeMs, url: String(timeMs) })) };
     const frames = sampleThumbnailsForClip(data, { ...clip(4000, 3000), type: 'video', trackId: 'video', playbackRate: 2, sourceDurationMs: 6000 }, 2);
-    expect(frames.map((frame) => frame.timeMs)).toEqual([6000, 8000]);
+    expect(frames.map((frame) => frame.timeMs)).toEqual([4000, 6000]);
+  });
+
+  it('keeps one source thumbnail per second for ordinary assets and bounds long-asset analysis', () => {
+    expect(thumbnailFrameCount(10_000)).toBe(11);
+    expect(thumbnailStepUs(10_000_000)).toBe(1_000_000);
+    expect(thumbnailFrameCount(60 * 60 * 1000)).toBe(180);
   });
 });

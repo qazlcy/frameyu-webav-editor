@@ -24,7 +24,7 @@ export const WAVEFORM_CANVAS_SELF_TEST_DATA: WaveformData = {
   sampleCounts: Array.from({ length: 256 }, () => 1),
 };
 
-/** A DPR-aware, pointer-transparent, symmetric filled envelope for one visible clip window. */
+/** A DPR-aware, pointer-transparent, bottom-aligned discrete amplitude bar view. */
 export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, summary, displaySettings = DEFAULT_WAVEFORM_DISPLAY_SETTINGS, compact = false, className = '' }: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasReportedPaintRef = useRef(false);
@@ -65,18 +65,23 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
       if (visibleWidth < 1) return;
       const visibleSourceStartMs = sourceStartMs + sourceDurationMs * visibleLeft / width;
       const visibleSourceDurationMs = sourceDurationMs * visibleWidth / width;
-      const columns = Math.min(2400, Math.max(1, Math.round(visibleWidth * dpr)));
+      // Each bar has a deliberate visual gap. This keeps zoomed-out audio from
+      // becoming a solid color block while zooming naturally reveals more detail.
+      const barStride = compact ? 2 : 3;
+      const barWidth = compact ? 1 : 1.25;
+      const columns = Math.min(800, Math.max(1, Math.floor(visibleWidth / barStride)));
       const envelope = sampleWaveformEnvelope(data, visibleSourceStartMs, visibleSourceDurationMs, columns);
       if (!envelope.length) return;
       const reference = summary ?? summariseWaveform(data);
       const settings = normaliseWaveformDisplaySettings(displaySettings);
-      const padding = Math.max(compact ? 1 : 3, height * 0.1);
-      const centerY = height / 2;
-      const halfHeight = Math.max(0, (height - padding * 2) / 2);
-      const xFor = (index: number) => visibleLeft + index / Math.max(1, envelope.length - 1) * visibleWidth;
+      const paddingTop = Math.max(compact ? 1 : 4, height * .16);
+      const paddingBottom = Math.max(compact ? 1 : 3, height * .1);
+      const baselineY = height - paddingBottom;
+      const usableHeight = Math.max(0, baselineY - paddingTop);
+      const xFor = (index: number) => visibleLeft + index * barStride + (barStride - barWidth) / 2;
       const amplitudes = envelope.map((column) => mapWaveformDisplayAmplitude(column.peak, column.rms, reference, settings));
-      const peakAmplitudes = amplitudes.map((value) => value.peak * halfHeight);
-      const rmsAmplitudes = amplitudes.map((value) => value.rms * halfHeight);
+      const peakAmplitudes = amplitudes.map((value) => value.peak * usableHeight);
+      const rmsAmplitudes = amplitudes.map((value) => value.rms * usableHeight);
       if (!hasReportedPaintRef.current) {
         hasReportedPaintRef.current = true;
         console.info('[WaveformCanvas] painted', {
@@ -87,27 +92,26 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
           p90Peak: reference.p90Peak, p95Peak: reference.p95Peak, p99Peak: reference.p99Peak,
           maxRms: reference.maxRms, averageRms: reference.averageRms, nonZeroPeakRatio: reference.nonZeroPeakRatio,
           mode: settings.mode, gain: settings.gain, contrast: settings.contrast,
-          effectiveHeight: Math.round(halfHeight * 2), maxPeakHeight: Math.max(0, ...peakAmplitudes) * 2,
-          maxRmsHeight: Math.max(0, ...rmsAmplitudes) * 2,
+          renderStyle: 'discrete-bottom-bars', effectiveHeight: Math.round(usableHeight), maxPeakHeight: Math.max(0, ...peakAmplitudes),
+          maxRmsHeight: Math.max(0, ...rmsAmplitudes),
         });
       }
-      const paintEnvelope = (values: number[], alpha: number) => {
-        context.beginPath();
-        for (let index = 0; index < values.length; index += 1) {
-          const x = xFor(index);
-          const y = centerY - (values[index] ?? 0);
-          if (index === 0) context.moveTo(x, y);
-          else context.lineTo(x, y);
+      context.fillStyle = color;
+      for (let index = 0; index < rmsAmplitudes.length; index += 1) {
+        const rmsHeight = rmsAmplitudes[index] ?? 0;
+        const peakHeight = peakAmplitudes[index] ?? 0;
+        if (rmsHeight > 0) {
+          context.globalAlpha = compact ? .78 : .9;
+          context.fillRect(xFor(index), baselineY - rmsHeight, barWidth, rmsHeight);
         }
-        for (let index = values.length - 1; index >= 0; index -= 1) context.lineTo(xFor(index), centerY + (values[index] ?? 0));
-        context.closePath();
-        context.fillStyle = color;
-        context.globalAlpha = alpha;
-        context.fill();
-      };
-      // The outer envelope preserves transients; the inner layer shows sustained energy.
-      paintEnvelope(peakAmplitudes, compact ? .43 : .38);
-      paintEnvelope(rmsAmplitudes, compact ? .82 : .88);
+        // The fine peak extension reveals brief transients without turning bars into fills.
+        if (peakHeight > rmsHeight + .75) {
+          context.globalAlpha = .42;
+          context.fillRect(xFor(index) + barWidth * .35, baselineY - peakHeight, Math.max(.45, barWidth * .3), peakHeight - rmsHeight);
+        }
+      }
+      context.globalAlpha = .28;
+      context.fillRect(visibleLeft, baselineY, visibleWidth, .5);
       context.globalAlpha = 1;
     };
     const schedule = () => {
@@ -130,5 +134,5 @@ export function WaveformCanvas({ data, sourceStartMs, sourceDurationMs, color, s
     };
   }, [color, compact, data, displaySettings, sourceDurationMs, sourceStartMs, summary]);
 
-  return <canvas ref={canvasRef} className={`timeline-waveform-canvas ${className}`} data-waveform-buckets={data.peaks.length} data-waveform-source-start-ms={sourceStartMs} data-waveform-source-duration-ms={sourceDurationMs} aria-hidden="true" />;
+  return <canvas ref={canvasRef} className={`timeline-waveform-canvas ${className}`} data-waveform-render-style="discrete-bottom-bars" data-waveform-buckets={data.peaks.length} data-waveform-source-start-ms={sourceStartMs} data-waveform-source-duration-ms={sourceDurationMs} aria-hidden="true" />;
 }
